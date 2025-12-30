@@ -97,16 +97,23 @@ def process_account(account_info, token, supabase):
         "total_asset": int(output2['tot_evlu_amt'])
     }
 
+    # ============================================================
+    # [수정된 부분] .select() 제거
+    # execute()를 호출하면 자동으로 insert된 데이터가 data 변수에 담깁니다.
+    # ============================================================
     res_master = supabase.table("asset_snapshot").upsert(
         snapshot_data, on_conflict="account_no, record_date"
-    ).select().execute()
+    ).execute()
 
     if not res_master.data:
-        print("   ❌ DB 저장 실패")
+        print("   ❌ DB 저장 실패 (데이터 반환 없음)")
         return
+    
+    # 리스트의 첫 번째 요소에서 id 추출
     snapshot_id = res_master.data[0]['id']
 
     # 2. Holdings Update
+    # 기존 상세 내역 삭제
     supabase.table("asset_holdings").delete().eq("snapshot_id", snapshot_id).execute()
     
     holdings_data = []
@@ -123,6 +130,7 @@ def process_account(account_info, token, supabase):
         })
 
     if holdings_data:
+        # insert에도 select() 없이 execute()만 사용
         supabase.table("asset_holdings").insert(holdings_data).execute()
         print(f"   ✅ 저장 완료 (총자산: {snapshot_data['total_asset']:,}원)")
     else:
