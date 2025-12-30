@@ -1,0 +1,33 @@
+name: Daily IRP Asset Backup
+
+on:
+  schedule:
+    # 매일 한국 시간 오후 5시 실행 (KST 17:00 = UTC 08:00)
+    # Cron 문법: 분 시 일 월 요일 (UTC 기준)
+    - cron: '0 9 * * *'
+  workflow_dispatch: # 수동 실행 버튼 활성화
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install requests supabase
+
+      - name: Run backup script
+        env:
+          # GitHub Secrets를 환경변수로 주입
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ACCOUNTS_JSON: ${{ secrets.ACCOUNTS_JSON }}
+        run: python main.py
