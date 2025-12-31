@@ -51,9 +51,9 @@ def process_account(account_info, token, supabase):
     app_key = account_info['app_key']
     app_secret = account_info['app_secret']
 
-    print(f"   📊 [{name}] 잔고 조회 중...")
+    print(f"   📊 [{name}] 잔고 조회 중... ({acc_no})")
 
-    # 잔고 조회
+    # 잔고 조회 API
     url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
     headers = {
         "Content-Type": "application/json; charset=utf-8",
@@ -81,39 +81,42 @@ def process_account(account_info, token, supabase):
     output1 = data['output1']
     output2 = data['output2'][0]
 
-    # 날짜 (KST 강제 적용) - GitHub 서버는 UTC이므로 필수
+    # 날짜 생성 (KST)
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     today_str = now_kst.strftime("%Y-%m-%d")
     
-    # 1. Snapshot Upsert
+    # [데이터 정제]
+    tot_amt = int(output2['tot_evlu_amt'])    # 총 평가금액
+    stock_amt = int(output2['scts_evlu_amt']) # 주식 평가금액
+    
+    # 🔥 [수정됨] 현금 = 총액 - 주식액 (API 예수금 필드 대신 역산 사용)
+    # IRP 계좌 등에서 예수금 필드가 0으로 오는 경우 방지
+    calc_cash = tot_amt - stock_amt 
+
+    # [1] Master Data (Snapshot) Upsert
     snapshot_data = {
         "account_no": acc_no,
         "account_name": name,
         "record_date": today_str,
         "recorded_at": now_kst.isoformat(),
-        "total_cash": int(output2['dnca_tot_amt']),
-        "total_stock_amt": int(output2['scts_evlu_amt']),
-        "total_asset": int(output2['tot_evlu_amt'])
+        
+        "total_asset": tot_amt,
+        "total_stock_amt": stock_amt,
+        "total_cash": calc_cash  # 계산된 현금 입력
     }
 
-    # ============================================================
-    # [수정된 부분] .select() 제거
-    # execute()를 호출하면 자동으로 insert된 데이터가 data 변수에 담깁니다.
-    # ============================================================
     res_master = supabase.table("asset_snapshot").upsert(
         snapshot_data, on_conflict="account_no, record_date"
     ).execute()
 
     if not res_master.data:
-        print("   ❌ DB 저장 실패 (데이터 반환 없음)")
+        print("   ❌ DB 저장 실패")
         return
     
-    # 리스트의 첫 번째 요소에서 id 추출
     snapshot_id = res_master.data[0]['id']
 
-    # 2. Holdings Update
-    # 기존 상세 내역 삭제
+    # [2] Detail Data (Holdings) Replace
     supabase.table("asset_holdings").delete().eq("snapshot_id", snapshot_id).execute()
     
     holdings_data = []
@@ -130,11 +133,10 @@ def process_account(account_info, token, supabase):
         })
 
     if holdings_data:
-        # insert에도 select() 없이 execute()만 사용
         supabase.table("asset_holdings").insert(holdings_data).execute()
-        print(f"   ✅ 저장 완료 (총자산: {snapshot_data['total_asset']:,}원)")
+        print(f"   ✅ 저장 완료 (자산: {tot_amt:,}원 / 현금: {calc_cash:,}원)")
     else:
-        print(f"   ✅ 저장 완료 (보유종목 없음)")
+        print(f"   ✅ 저장 완료 (보유종목 없음 / 현금: {calc_cash:,}원)")
 
 def main():
     print("=== 🚀 GitHub Actions 자산 백업 시작 ===")
