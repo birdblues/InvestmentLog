@@ -25,7 +25,7 @@ BASE_URL = "https://openapi.koreainvestment.com:9443"
 # ============================================================================
 
 def get_token_from_api(app_key, app_secret):
-    """API 서버에 요청하여 새 토큰 발급 (메모리용)"""
+    """API 서버에 요청하여 새 토큰 발급"""
     url = f"{BASE_URL}/oauth2/tokenP"
     headers = {"content-type": "application/json"}
     body = {
@@ -34,7 +34,8 @@ def get_token_from_api(app_key, app_secret):
         "appsecret": app_secret
     }
     try:
-        res = requests.post(url, headers=headers, data=json.dumps(body))
+        # 타임아웃 10초 설정
+        res = requests.post(url, headers=headers, data=json.dumps(body), timeout=10)
         res_json = res.json()
         if res.status_code == 200:
             return res_json['access_token']
@@ -45,151 +46,243 @@ def get_token_from_api(app_key, app_secret):
         print(f"❌ 요청 중 에러: {e}")
         return None
 
-def process_account(account_info, token, supabase):
-    name = account_info['name']
-    acc_no = account_info['acc_no']
-    app_key = account_info['app_key']
-    app_secret = account_info['app_secret']
+# ============================================================================
+# [핵심] 계좌별 API 조회 로직 분리
+# ============================================================================
 
-    print(f"   📊 [{name}] 잔고 조회 중... ({acc_no})")
-
-    # ====================================================
-    # [페이지네이션] 연속 조회 처리 루프
-    # ====================================================
+def fetch_balance_stock(token, app_key, app_secret, acc_no):
+    """일반 주식 계좌 조회 (위탁-01, 연금저축-22, ISA 등)"""
+    url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {token}",
+        "appkey": app_key,
+        "appsecret": app_secret,
+        "tr_id": "TTTC8434R", # 주식 잔고 조회
+        "custtype": "P",
+    }
+    
     all_holdings = []
+    tot_amt = 0
+    stock_amt = 0
+    cash_amt = 0
+    
     ctx_area_fk100 = ""
     ctx_area_nk100 = ""
     
-    # 총액 정보는 첫 번째 호출에서 가져와서 고정
-    final_output2 = None
-    
+    page_count = 0
+    MAX_PAGES = 20 # 안전장치
+
     while True:
-        url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {token}",
-            "appkey": app_key,
-            "appsecret": app_secret,
-            "tr_id": "TTTC8434R",
-            "custtype": "P",
-        }
+        page_count += 1
+        print(f"      ▶ 일반계좌 페이지 {page_count} 조회 중...", end="\r")
+
         params = {
             "CANO": acc_no[:8],
             "ACNT_PRDT_CD": acc_no[-2:],
             "AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02", "UNPR_DVSN": "01",
             "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
-            # 연속 조회를 위한 파라미터 업데이트
             "CTX_AREA_FK100": ctx_area_fk100,
             "CTX_AREA_NK100": ctx_area_nk100
         }
-
-        try:
-            res = requests.get(url, headers=headers, params=params)
-            data = res.json()
-        except Exception as e:
-            print(f"   ❌ API 요청 실패: {e}")
-            return
-
-        if data['rt_cd'] != '0':
-            print(f"   ❌ 조회 실패(rt_cd!=0): {data.get('msg1', '알 수 없는 오류')}")
-            return
-
-        # 첫 페이지일 때만 총액 정보(output2) 저장
-        if final_output2 is None and 'output2' in data and data['output2']:
-            final_output2 = data['output2'][0]
-
-        # 종목 리스트 수집
-        if 'output1' in data and data['output1']:
-            all_holdings.extend(data['output1'])
+        res = requests.get(url, headers=headers, params=params, timeout=30)
+        data = res.json()
         
-        # [연속 조회 체크] 
-        # API 응답 헤더의 tr_cont가 'D' or 'M' 이거나, body의 ctx_area_nk100이 비어있지 않으면 다음 페이지 있음
+        if data['rt_cd'] != '0':
+            print(f"\n   ❌ 일반계좌 조회 실패: {data.get('msg1')}")
+            return None
+
+        # 첫 페이지에서 총액 정보 수집
+        if tot_amt == 0 and data['output2']:
+            out2 = data['output2'][0]
+            tot_amt = int(out2['tot_evlu_amt'])
+            stock_amt = int(out2['scts_evlu_amt'])
+            try:
+                cash_amt = int(out2['dnca_tot_amt'])
+            except:
+                cash_amt = tot_amt - stock_amt
+
+        # 보유 종목 추가
+        if data['output1']:
+            for item in data['output1']:
+                all_holdings.append({
+                    "stock_code": item['pdno'],
+                    "stock_name": item['prdt_name'],
+                    "qty": int(item['hldg_qty']),
+                    "buy_price": float(item['pchs_avg_pric']),
+                    "cur_price": float(item['prpr']),
+                    "eval_amt": int(item['evlu_amt']),
+                    "earning_rate": float(item['evlu_pfls_rt'])
+                })
+        else:
+            break
+        
+        # 페이지네이션 체크
         tr_cont = res.headers.get('tr_cont', 'N')
         ctx_area_nk100 = data.get('ctx_area_nk100', '').strip()
         ctx_area_fk100 = data.get('ctx_area_fk100', '').strip()
-
-        if tr_cont in ['D', 'M'] or ctx_area_nk100 != "":
-            # 다음 페이지 있음 -> 루프 계속
-            time.sleep(0.1) # API 부하 방지
+        
+        if (tr_cont in ['D', 'M'] or ctx_area_nk100 != "") and page_count < MAX_PAGES:
+            time.sleep(0.1)
             continue
         else:
-            # 더 이상 데이터 없음 -> 종료
             break
-
-    # ====================================================
-    # 데이터 저장 로직
-    # ====================================================
     
-    if final_output2 is None:
-        print("   ⚠️ [주의] 계좌 총액 정보(output2)를 받지 못했습니다. 스킵합니다.")
+    print("") # 줄바꿈
+    return {
+        "total_asset": tot_amt,
+        "total_stock": stock_amt,
+        "total_cash": cash_amt,
+        "holdings": all_holdings
+    }
+
+def fetch_balance_irp(token, app_key, app_secret, acc_no):
+    """IRP / 퇴직연금 계좌 조회 (-29)"""
+    url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/pension/inquire-balance"
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {token}",
+        "appkey": app_key,
+        "appsecret": app_secret,
+        "tr_id": "TTTC2208R", # 퇴직연금 잔고 조회
+    }
+    
+    all_holdings = []
+    tot_amt = 0
+    stock_amt = 0
+    cash_amt = 0
+    
+    ctx_area_fk100 = ""
+    ctx_area_nk100 = ""
+    
+    page_count = 0
+    MAX_PAGES = 20
+
+    while True:
+        page_count += 1
+        print(f"      ▶ IRP계좌 페이지 {page_count} 조회 중...", end="\r")
+
+        params = {
+            "CANO": acc_no[:8],
+            "ACNT_PRDT_CD": acc_no[-2:],
+            "ACCA_DVSN_CD": "00",
+            "INQR_DVSN": "00",
+            "CTX_AREA_FK100": ctx_area_fk100,
+            "CTX_AREA_NK100": ctx_area_nk100
+        }
+        res = requests.get(url, headers=headers, params=params, timeout=30)
+        data = res.json()
+        
+        if data['rt_cd'] != '0':
+            print(f"\n   ❌ IRP계좌 조회 실패: {data.get('msg1')}")
+            return None
+
+        # IRP 총액 정보 (output2가 딕셔너리)
+        if tot_amt == 0 and data['output2']:
+            out2 = data['output2']
+            tot_amt = int(out2.get('tot_evlu_amt', 0))
+            
+        # 보유 종목 추가
+        if data['output1']:
+            for item in data['output1']:
+                all_holdings.append({
+                    "stock_code": item['pdno'],
+                    "stock_name": item['prdt_name'],
+                    "qty": int(item['hldg_qty']),
+                    "buy_price": float(item['pchs_avg_pric']),
+                    "cur_price": float(item['prpr']),
+                    "eval_amt": int(item['evlu_amt']),
+                    "earning_rate": float(item.get('evlu_erng_rt', 0)) # 필드명 주의
+                })
+        else:
+            break
+        
+        # 페이지네이션 체크
+        tr_cont = res.headers.get('tr_cont', 'N')
+        ctx_area_nk100 = data.get('ctx_area_nk100', '').strip()
+        ctx_area_fk100 = data.get('ctx_area_fk100', '').strip()
+        
+        if (tr_cont in ['D', 'M'] or ctx_area_nk100 != "") and page_count < MAX_PAGES:
+            time.sleep(0.1)
+            continue
+        else:
+            break
+            
+    print("") # 줄바꿈
+
+    # IRP 현금 = 총자산 - 주식평가합 (역산)
+    sum_holdings = sum(h['eval_amt'] for h in all_holdings)
+    cash_amt = tot_amt - sum_holdings
+    
+    return {
+        "total_asset": tot_amt,
+        "total_stock": sum_holdings,
+        "total_cash": cash_amt,
+        "holdings": all_holdings
+    }
+
+def process_account(account_info, token, supabase):
+    name = account_info['name']
+    acc_no = account_info['acc_no']
+    app_key = account_info['app_key']
+    app_secret = account_info['app_secret']
+    
+    # ✅ [수정됨] 계좌번호 뒷자리가 '29'로 끝나면 IRP로 자동 인식
+    is_irp = acc_no.endswith('29') or "IRP" in name.upper() or "퇴직" in name
+
+    print(f"   📊 [{name}] 잔고 조회 시작... ({'IRP/연금' if is_irp else '일반주식'})")
+
+    if is_irp:
+        result = fetch_balance_irp(token, app_key, app_secret, acc_no)
+    else:
+        result = fetch_balance_stock(token, app_key, app_secret, acc_no)
+        
+    if not result:
         return
 
-    # 날짜 생성 (KST 한국 시간)
+    # ====================================================
+    # DB 저장 로직 (공통)
+    # ====================================================
+    
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     today_str = now_kst.strftime("%Y-%m-%d")
     
-    # 데이터 정제 (총액 및 현금 역산)
-    tot_amt = int(final_output2['tot_evlu_amt'])
-    stock_amt = int(final_output2['scts_evlu_amt'])
-    calc_cash = tot_amt - stock_amt 
-
-    # [안전장치 🔥] 
-    # 총액(stock_amt)은 있는데 종목 리스트(all_holdings)가 비어있다면, 
-    # API 오류(주말/휴일 등)일 가능성이 높으므로 기존 데이터를 보호하기 위해 저장하지 않고 종료
-    if stock_amt > 0 and not all_holdings:
-        print(f"   ⚠️ [방어 로직 작동] 잔고({stock_amt:,}원)는 있으나 종목 리스트가 비어있습니다. 기존 데이터를 보호하기 위해 건너뜁니다.")
-        return
-
-    # [1] Master Data (Snapshot) Upsert
     snapshot_data = {
         "account_no": acc_no,
         "account_name": name,
         "record_date": today_str,
         "recorded_at": now_kst.isoformat(),
-        "total_asset": tot_amt,
-        "total_stock_amt": stock_amt,
-        "total_cash": calc_cash
+        "total_asset": result['total_asset'],
+        "total_stock_amt": result['total_stock'],
+        "total_cash": result['total_cash']
     }
 
-    # execute()만 호출
     res_master = supabase.table("asset_snapshot").upsert(
         snapshot_data, on_conflict="account_no, record_date"
     ).execute()
-
-    if not res_master.data:
-        print("   ❌ DB 저장 실패 (Snapshot)")
-        return
     
+    if not res_master.data:
+        print("   ❌ DB 저장 실패")
+        return
+
     snapshot_id = res_master.data[0]['id']
 
-    # [2] Detail Data (Holdings) Replace
-    # 안전장치를 통과했으므로, 해당 날짜의 기존 상세 내역을 지우고 새로 받은 전체 리스트를 저장
+    # 상세 내역 저장
     supabase.table("asset_holdings").delete().eq("snapshot_id", snapshot_id).execute()
     
     holdings_data = []
-    for item in all_holdings:
-        # 혹시 모를 빈 데이터 필터링
-        if not item['pdno']: continue
+    for item in result['holdings']:
+        if not item['stock_code']: continue
         
-        holdings_data.append({
-            "snapshot_id": snapshot_id,
-            "stock_code": item['pdno'],
-            "stock_name": item['prdt_name'],
-            "qty": int(item['hldg_qty']),
-            "buy_price": float(item['pchs_avg_pric']),
-            "cur_price": float(item['prpr']),
-            "eval_amt": int(item['evlu_amt']),
-            "earning_rate": float(item['evlu_pfls_rt'])
-        })
+        item['snapshot_id'] = snapshot_id
+        holdings_data.append(item)
 
     if holdings_data:
-        # 대량 Insert (Batch)
         supabase.table("asset_holdings").insert(holdings_data).execute()
-        print(f"   ✅ 저장 완료 (자산: {tot_amt:,}원 / 종목수: {len(holdings_data)}개)")
+        print(f"   ✅ 저장 완료 (자산: {result['total_asset']:,}원 / 종목수: {len(holdings_data)}개)")
     else:
-        # 주식 잔고가 0원이라 종목이 없는 경우
-        print(f"   ✅ 저장 완료 (보유종목 없음 / 현금: {calc_cash:,}원)")
+        print(f"   ✅ 저장 완료 (보유종목 없음)")
 
 def main():
     print("=== 🚀 GitHub Actions 자산 백업 시작 ===")
@@ -200,32 +293,26 @@ def main():
         print(f"❌ Supabase 접속 실패: {e}")
         return
 
-    # 메모리 토큰 캐시 (AppKey 기준)
     memory_token_cache = {}
 
     for account in ACCOUNTS:
         app_key = account['app_key']
         app_secret = account['app_secret']
 
-        # 토큰 재사용 로직
         if app_key in memory_token_cache:
             token = memory_token_cache[app_key]
-            print(f"\n♻️ [캐시] 토큰 재사용 ({account['name']})")
         else:
-            print(f"\n⚡ [{account['name']}] 새 토큰 발급 중...")
             token = get_token_from_api(app_key, app_secret)
             if token:
                 memory_token_cache[app_key] = token
             else:
                 continue 
 
-        # 계좌 처리
         try:
             process_account(account, token, supabase)
         except Exception as e:
             print(f"❌ 에러 발생: {e}")
         
-        # API 호출 제한 방지
         time.sleep(1)
 
     print("\n=== ✨ 작업 완료 ===")
