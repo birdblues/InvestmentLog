@@ -51,7 +51,7 @@ def get_token_from_api(app_key, app_secret):
 # ============================================================================
 
 def fetch_balance_stock(token, app_key, app_secret, acc_no):
-    """일반 주식 계좌 조회 (위탁-01, 연금저축-22, ISA 등)"""
+    """일반 주식 계좌 조회 (위탁, 연금저축, ISA 등)"""
     url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance"
     headers = {
         "Content-Type": "application/json; charset=utf-8",
@@ -71,7 +71,7 @@ def fetch_balance_stock(token, app_key, app_secret, acc_no):
     ctx_area_nk100 = ""
     
     page_count = 0
-    MAX_PAGES = 20 # 안전장치
+    MAX_PAGES = 20
 
     while True:
         page_count += 1
@@ -85,8 +85,12 @@ def fetch_balance_stock(token, app_key, app_secret, acc_no):
             "CTX_AREA_FK100": ctx_area_fk100,
             "CTX_AREA_NK100": ctx_area_nk100
         }
-        res = requests.get(url, headers=headers, params=params, timeout=30)
-        data = res.json()
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=30)
+            data = res.json()
+        except Exception as e:
+             print(f"\n   ❌ API 요청 실패: {e}")
+             return None
         
         if data['rt_cd'] != '0':
             print(f"\n   ❌ 일반계좌 조회 실패: {data.get('msg1')}")
@@ -117,18 +121,20 @@ def fetch_balance_stock(token, app_key, app_secret, acc_no):
         else:
             break
         
-        # 페이지네이션 체크
-        tr_cont = res.headers.get('tr_cont', 'N')
+        # [수정된 페이지네이션] 다음 키값 없으면 즉시 종료
         ctx_area_nk100 = data.get('ctx_area_nk100', '').strip()
         ctx_area_fk100 = data.get('ctx_area_fk100', '').strip()
         
-        if (tr_cont in ['D', 'M'] or ctx_area_nk100 != "") and page_count < MAX_PAGES:
+        if ctx_area_nk100 == "":
+            break
+            
+        if page_count < MAX_PAGES:
             time.sleep(0.1)
             continue
         else:
             break
     
-    print("") # 줄바꿈
+    print("") 
     return {
         "total_asset": tot_amt,
         "total_stock": stock_amt,
@@ -149,8 +155,6 @@ def fetch_balance_irp(token, app_key, app_secret, acc_no):
     
     all_holdings = []
     tot_amt = 0
-    stock_amt = 0
-    cash_amt = 0
     
     ctx_area_fk100 = ""
     ctx_area_nk100 = ""
@@ -170,14 +174,18 @@ def fetch_balance_irp(token, app_key, app_secret, acc_no):
             "CTX_AREA_FK100": ctx_area_fk100,
             "CTX_AREA_NK100": ctx_area_nk100
         }
-        res = requests.get(url, headers=headers, params=params, timeout=30)
-        data = res.json()
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=30)
+            data = res.json()
+        except Exception as e:
+             print(f"\n   ❌ API 요청 실패: {e}")
+             return None
         
         if data['rt_cd'] != '0':
             print(f"\n   ❌ IRP계좌 조회 실패: {data.get('msg1')}")
             return None
 
-        # IRP 총액 정보 (output2가 딕셔너리)
+        # IRP 총액 정보
         if tot_amt == 0 and data['output2']:
             out2 = data['output2']
             tot_amt = int(out2.get('tot_evlu_amt', 0))
@@ -192,33 +200,45 @@ def fetch_balance_irp(token, app_key, app_secret, acc_no):
                     "buy_price": float(item['pchs_avg_pric']),
                     "cur_price": float(item['prpr']),
                     "eval_amt": int(item['evlu_amt']),
-                    "earning_rate": float(item.get('evlu_erng_rt', 0)) # 필드명 주의
+                    "earning_rate": float(item.get('evlu_erng_rt', 0))
                 })
         else:
             break
         
-        # 페이지네이션 체크
-        tr_cont = res.headers.get('tr_cont', 'N')
+        # [수정된 페이지네이션] 다음 키값 없으면 즉시 종료 (무한루프 방지 핵심)
         ctx_area_nk100 = data.get('ctx_area_nk100', '').strip()
         ctx_area_fk100 = data.get('ctx_area_fk100', '').strip()
         
-        if (tr_cont in ['D', 'M'] or ctx_area_nk100 != "") and page_count < MAX_PAGES:
+        if ctx_area_nk100 == "":
+            break
+            
+        if page_count < MAX_PAGES:
             time.sleep(0.1)
             continue
         else:
             break
             
-    print("") # 줄바꿈
+    print("")
 
+    # [안전장치] 중복 종목 제거 (동일 stock_code가 여러번 들어온 경우 방지)
+    unique_holdings = {}
+    for h in all_holdings:
+        code = h['stock_code']
+        # 이미 있으면 덮어쓰거나 무시 (최신 페이지 데이터가 더 정확하다고 가정하거나, API 특성상 단순 중복일 가능성 높음)
+        if code not in unique_holdings:
+            unique_holdings[code] = h
+    
+    final_holdings = list(unique_holdings.values())
+    
     # IRP 현금 = 총자산 - 주식평가합 (역산)
-    sum_holdings = sum(h['eval_amt'] for h in all_holdings)
+    sum_holdings = sum(h['eval_amt'] for h in final_holdings)
     cash_amt = tot_amt - sum_holdings
     
     return {
         "total_asset": tot_amt,
         "total_stock": sum_holdings,
         "total_cash": cash_amt,
-        "holdings": all_holdings
+        "holdings": final_holdings
     }
 
 def process_account(account_info, token, supabase):
@@ -227,7 +247,7 @@ def process_account(account_info, token, supabase):
     app_key = account_info['app_key']
     app_secret = account_info['app_secret']
     
-    # ✅ [수정됨] 계좌번호 뒷자리가 '29'로 끝나면 IRP로 자동 인식
+    # 계좌번호 뒷자리가 '29'로 끝나면 IRP로 자동 인식
     is_irp = acc_no.endswith('29') or "IRP" in name.upper() or "퇴직" in name
 
     print(f"   📊 [{name}] 잔고 조회 시작... ({'IRP/연금' if is_irp else '일반주식'})")
@@ -241,7 +261,7 @@ def process_account(account_info, token, supabase):
         return
 
     # ====================================================
-    # DB 저장 로직 (공통)
+    # DB 저장 로직
     # ====================================================
     
     KST = timezone(timedelta(hours=9))
