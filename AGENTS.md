@@ -10,7 +10,14 @@
 
 ## 팩터 회귀 정책
 - 베타 회귀는 `ret`만 사용하고 `level`은 검증/감사용으로만 둡니다.
-- 월간 팩터(`F_INFL_KR_CPI`)는 일간 회귀에 포함할 때 `record_date`를 1개월 시프트한 날짜를 발표일로 간주하고, 해당 날짜에만 `ret`를 반영하며 그 외 일자는 0으로 처리합니다.
+- `factor_returns.lag_policy`를 우선 적용하고, 없으면 0(당일)으로 처리합니다.
+- `method` 컬럼에 `OLS_MULTI`/`OLS_SINGLE`을 둘 다 계산해 저장합니다.
+- 금리/크레딧 계열은 레벨 변화(Δy, ΔOAS)를 duration 기반 가격형 `ret`로 변환해 사용합니다. (US10Y=8.5, KR10Y=8.5, HY OAS=4.5)
+- 월간 팩터(`F_INFL_KR_CPI`)는 일단 베타 계산에서 제외합니다. 재도입 시 `record_date`를 1개월 시프트한 날짜를 발표일로 간주하고, 해당 날짜에만 `ret`를 반영하며 그 외 일자는 0으로 처리합니다.
+- 원시 관측일(`observed_date`)과 국내 적용일(`effective_kr_date`)을 분리해 저장합니다.
+- 정규화는 별도 뷰 `view_factor_returns_zscore`에 저장합니다.
+- `FACTOR_ZSCORE_WINDOW_DAYS`(.env)로 롤링 윈도우 길이를 설정합니다.
+- 비영일(`ret != 0`)만으로 평균/표준편차를 계산하고, `ret=0`은 `ret_z=0`으로 둡니다.
 
 ## 멀티 vs 단일 팩터 회귀 기준
 - 멀티 팩터 회귀는 다른 팩터를 통제한 순수 노출(부분효과), 단일 팩터 회귀는 공분산이 섞인 총 노출(마진효과)로 해석합니다.
@@ -30,6 +37,8 @@
 - `update_mappings.sql`: `ticker_category_map` 시드/업데이트 SQL
 - `factor_returns_loader.py`: 팩터 데이터 수집/수익률 계산 후 `factor_returns` 업서트
 - `ticker_factor_beta_loader.py`: 티커 수익률 + 팩터 수익률로 베타 계산 후 업서트/리포트 생성
+- `create_factor_returns_zscore_view.py`: 팩터 수익률 z-score 뷰 SQL 생성(윈도우 길이 .env)
+- `view_factor_returns_zscore.sql`: z-score 뷰 생성 SQL(스크립트 출력물)
 - `test_ticker.py`: yfinance 심볼 가용성 점검 + 결과 write-back/리포트 생성
 - `debug_factor_presence.py`: `factor_returns` 데이터 존재/기간/결측 점검
 - `inspect_schema.py`: `factor_returns` 샘플 조회로 컬럼 확인

@@ -28,6 +28,7 @@ ticker_factor_beta_loader.py (FULL REPLACE)
 Env:
   SUPABASE_URL=...
   SUPABASE_KEY=...
+  FACTOR_RET_SOURCE=raw|zscore (optional, default=raw)
 
 실행:
   uv run python ticker_factor_beta_loader.py
@@ -53,11 +54,22 @@ load_dotenv(override=False)
 # Hardcoded table names
 # -----------------------------
 TICKER_MAP_TABLE = "ticker_category_map"
-FACTOR_TABLE = "factor_returns"
 BETA_TABLE = "ticker_factor_beta_long"
 
-METHOD_MULTI = "OLS_MULTI"
-METHOD_SINGLE = "OLS_SINGLE"
+FACTOR_RET_SOURCE = os.getenv("FACTOR_RET_SOURCE", "raw").strip().lower()
+if FACTOR_RET_SOURCE not in ("raw", "zscore"):
+    raise RuntimeError(f"Invalid FACTOR_RET_SOURCE: {FACTOR_RET_SOURCE}")
+
+if FACTOR_RET_SOURCE == "zscore":
+    FACTOR_TABLE = "view_factor_returns_zscore"
+    FACTOR_RET_COLUMN = "ret_z"
+    METHOD_MULTI = "OLS_MULTI_Z"
+    METHOD_SINGLE = "OLS_SINGLE_Z"
+else:
+    FACTOR_TABLE = "factor_returns"
+    FACTOR_RET_COLUMN = "ret"
+    METHOD_MULTI = "OLS_MULTI"
+    METHOD_SINGLE = "OLS_SINGLE"
 
 # -----------------------------
 # Runtime config (hardcoded)
@@ -303,7 +315,7 @@ def fetch_factor_returns_one(
 ) -> pd.DataFrame:
     q = (
         sb.table(FACTOR_TABLE)
-        .select("factor_code,record_date,ret,frequency,lag_policy")
+        .select(f"factor_code,record_date,{FACTOR_RET_COLUMN},frequency,lag_policy")
         .eq("factor_code", factor_code)
         .lte("record_date", end_date.isoformat())
         .order("record_date", desc=False)
@@ -315,6 +327,9 @@ def fetch_factor_returns_one(
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+
+    if FACTOR_RET_COLUMN != "ret" and FACTOR_RET_COLUMN in df.columns:
+        df = df.rename(columns={FACTOR_RET_COLUMN: "ret"})
 
     df["record_date"] = pd.to_datetime(df["record_date"], errors="coerce").dt.date
     df["ret"] = pd.to_numeric(df["ret"], errors="coerce")
@@ -457,6 +472,8 @@ def upsert_beta_rows(sb: Client, rows: List[Dict]) -> None:
 # -----------------------------
 def main():
     sb = sb_client()
+
+    print(f"[INFO] factor_returns source={FACTOR_RET_SOURCE} table={FACTOR_TABLE} ret_col={FACTOR_RET_COLUMN}")
 
     # 베타 asof: "마감된 마지막 날짜" (단순히 로컬 -1)
     today = dt.date.today()
