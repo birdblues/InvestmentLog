@@ -1,0 +1,7 @@
+requests
+supabase
+python-dotenv
+keyring
+numpy
+pandas
+yfinance

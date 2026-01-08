@@ -56,6 +56,8 @@ TICKER_MAP_TABLE = "ticker_category_map"
 FACTOR_TABLE = "factor_returns"
 BETA_TABLE = "ticker_factor_beta_long"
 
+METHOD_MULTI = "OLS_MULTI"
+METHOD_SINGLE = "OLS_SINGLE"
 
 # -----------------------------
 # Runtime config (hardcoded)
@@ -69,24 +71,7 @@ UPSERT_CHUNK_SIZE = 500
 REPORT_CSV_PATH = "./beta_run_report.csv"
 
 
-# -----------------------------
-# Factor lag policy (observation shift)
-# - 한국 종목 기준: 미국장 마감/발표 팩터는 다음 영업일에 반영된다고 가정 -> +1
-# - 필요하면 여기만 바꾸면 됨
-# -----------------------------
-FACTOR_LAG_OBS: Dict[str, int] = {
-    "F_GROWTH_US_EQ": 1,
-    "F_RATE_US10Y": 1,
-    "F_VOL_VIX": 1,
-    "F_CREDIT_US_HY_OAS": 1,
-    "F_INFL_US_BE10Y": 1,
-    "F_COMM_OIL_WTI": 1,
-    # FX는 혼재 가능 -> 기본 0
-    "F_CURR_USDKRW": 0,
-    # KR factors
-    "F_RATE_KR10Y": 0,
-    "F_INFL_KR_CPI": 0,
-}
+LAG_POLICY_DEFAULT = 0
 
 
 # -----------------------------
@@ -147,6 +132,18 @@ def sb_select_all(base_query, page_size: int = 1000, max_pages: int = 500) -> Li
         if len(rows) < page_size:
             break
     return all_rows
+
+
+def parse_lag_policy(policy: Optional[str]) -> int:
+    if not policy:
+        return LAG_POLICY_DEFAULT
+    match = re.search(r"[-+]?\d+", str(policy))
+    if not match:
+        return LAG_POLICY_DEFAULT
+    try:
+        return int(match.group())
+    except ValueError:
+        return LAG_POLICY_DEFAULT
 
 
 # -----------------------------
@@ -306,9 +303,8 @@ def fetch_factor_returns_one(
 ) -> pd.DataFrame:
     q = (
         sb.table(FACTOR_TABLE)
-        .select("factor_code,record_date,ret,frequency")
+        .select("factor_code,record_date,ret,frequency,lag_policy")
         .eq("factor_code", factor_code)
-        .eq("frequency", "D")
         .lte("record_date", end_date.isoformat())
         .order("record_date", desc=False)
     )
@@ -326,6 +322,57 @@ def fetch_factor_returns_one(
     return df
 
 
+def expand_monthly_to_daily_ret(
+    df: pd.DataFrame,
+    end_date: dt.date,
+    start_date: Optional[dt.date] = None,
+    release_lag_months: int = 1,
+) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["factor_code", "record_date", "ret", "frequency", "lag_policy"])
+
+    df = df.copy()
+    df["record_date"] = pd.to_datetime(df["record_date"], errors="coerce")
+    df["ret"] = pd.to_numeric(df["ret"], errors="coerce")
+    df = df.dropna(subset=["record_date", "ret"]).copy()
+    if df.empty:
+        return pd.DataFrame(columns=["factor_code", "record_date", "ret", "frequency", "lag_policy"])
+
+    release_dates = (df["record_date"] + pd.DateOffset(months=release_lag_months)).dt.date
+    ret_map = {
+        d: float(r)
+        for d, r in zip(release_dates, df["ret"])
+        if pd.notna(r)
+    }
+    if not ret_map:
+        return pd.DataFrame(columns=["factor_code", "record_date", "ret", "frequency", "lag_policy"])
+
+    start = start_date or min(ret_map.keys())
+    start = max(start, min(ret_map.keys()))
+    if start > end_date:
+        return pd.DataFrame(columns=["factor_code", "record_date", "ret", "frequency", "lag_policy"])
+
+    idx = pd.date_range(start=start, end=end_date, freq="D")
+    ret_series = pd.Series(0.0, index=idx.date)
+    for d, r in ret_map.items():
+        if d in ret_series.index:
+            ret_series.loc[d] = r
+
+    factor_code = df["factor_code"].iloc[0]
+    lag_policy = None
+    if "lag_policy" in df.columns:
+        non_null = df["lag_policy"].dropna()
+        if not non_null.empty:
+            lag_policy = non_null.iloc[0]
+    return pd.DataFrame({
+        "factor_code": factor_code,
+        "record_date": ret_series.index,
+        "ret": ret_series.values,
+        "frequency": "D",
+        "lag_policy": lag_policy,
+    })
+
+
 def fetch_factor_returns(
     sb: Client,
     factor_codes: List[str],
@@ -335,6 +382,10 @@ def fetch_factor_returns(
     frames: List[pd.DataFrame] = []
     for fc in factor_codes:
         dfi = fetch_factor_returns_one(sb, fc, end_date=end_date, start_date=start_date)
+        if fc == "F_INFL_KR_CPI":
+            dfi = expand_monthly_to_daily_ret(dfi, end_date=end_date, start_date=start_date)
+        else:
+            dfi = dfi[dfi["frequency"] == "D"].copy()
         if not dfi.empty:
             frames.append(dfi)
     if not frames:
@@ -354,8 +405,14 @@ def apply_factor_lags(fdf: pd.DataFrame) -> pd.DataFrame:
     out = out.sort_values(["factor_code", "record_date"])
     out["aligned_ret"] = np.nan
 
+    has_lag_policy = "lag_policy" in out.columns
     for fc, g in out.groupby("factor_code", sort=False):
-        lag = int(FACTOR_LAG_OBS.get(fc, 0))
+        lag_policy = None
+        if has_lag_policy:
+            non_null = g["lag_policy"].dropna()
+            if not non_null.empty:
+                lag_policy = non_null.iloc[0]
+        lag = parse_lag_policy(lag_policy)
         s = g["ret"].astype(float)
         out.loc[g.index, "aligned_ret"] = s.shift(lag).values
 
@@ -419,7 +476,7 @@ def main():
         "F_CREDIT_US_HY_OAS",
         "F_INFL_US_BE10Y",
         "F_COMM_OIL_WTI",
-        "F_INFL_KR_CPI",
+        # "F_INFL_KR_CPI",  # 월간 CPI는 일단 베타 계산에서 제외
     ]
 
     # factor는 최근 구간만 필요: 2y + buffer
@@ -459,6 +516,11 @@ def main():
                 "n_obs": 0,
                 "ok_factors": "",
                 "skipped_factors": "",
+                "single_ok_factors": "",
+                "single_skipped_factors": "",
+                "single_failed_factors": "",
+                "single_status_map": "",
+                "single_n_obs_map": "",
             })
             continue
 
@@ -474,6 +536,11 @@ def main():
                 "n_obs": 0,
                 "ok_factors": "",
                 "skipped_factors": "",
+                "single_ok_factors": "",
+                "single_skipped_factors": "",
+                "single_failed_factors": "",
+                "single_status_map": "",
+                "single_n_obs_map": "",
             })
             continue
 
@@ -497,6 +564,11 @@ def main():
                 "n_obs": 0,
                 "ok_factors": "",
                 "skipped_factors": "",
+                "single_ok_factors": "",
+                "single_skipped_factors": "",
+                "single_failed_factors": "",
+                "single_status_map": "",
+                "single_n_obs_map": "",
             })
             continue
 
@@ -511,6 +583,11 @@ def main():
                 "n_obs": 0,
                 "ok_factors": "",
                 "skipped_factors": "",
+                "single_ok_factors": "",
+                "single_skipped_factors": "",
+                "single_failed_factors": "",
+                "single_status_map": "",
+                "single_n_obs_map": "",
             })
             continue
 
@@ -521,6 +598,71 @@ def main():
 
         # 실제 존재하는 factor만
         available_factors = [c for c in factor_codes if c in df.columns]
+
+        # -----------------------------
+        # Single-factor regressions
+        # -----------------------------
+        single_status_parts: List[str] = []
+        single_n_obs_parts: List[str] = []
+        single_ok_factors: List[str] = []
+        single_skipped_factors: List[str] = []
+        single_failed_factors: List[str] = []
+
+        updated_at = now_utc_iso()
+        created_at = updated_at
+
+        for fc in available_factors:
+            df_single = df[["ret_t", fc]].dropna()
+
+            if len(df_single) > WINDOW_DAYS:
+                df_single = df_single.iloc[-WINDOW_DAYS:].copy()
+
+            n_obs_single = int(df_single.shape[0])
+            single_n_obs_parts.append(f"{fc}:{n_obs_single}")
+
+            if n_obs_single < MIN_NOBS:
+                single_skipped_factors.append(fc)
+                single_status_parts.append(f"{fc}:THIN")
+                continue
+
+            y_single = df_single["ret_t"].astype(float).values
+            X_single = df_single[[fc]].astype(float).values
+
+            try:
+                beta_single, alpha_single, r2_single = ols_multi(y_single, X_single)
+            except Exception:
+                single_failed_factors.append(fc)
+                single_status_parts.append(f"{fc}:FAIL")
+                continue
+
+            asof_date_single = df_single.index.max()
+            if isinstance(asof_date_single, (pd.Timestamp, dt.datetime)):
+                asof_date_single = asof_date_single.date()
+            if not isinstance(asof_date_single, dt.date):
+                asof_date_single = end
+
+            upsert_rows.append({
+                "asof_date": asof_date_single.isoformat(),
+                "window_days": int(WINDOW_DAYS),
+                "stock_code": stock_code,
+                "factor_code": fc,
+
+                "beta": float(beta_single[0]) if np.isfinite(beta_single[0]) else None,
+                "r2": float(r2_single) if np.isfinite(r2_single) else None,
+                "n_obs": int(n_obs_single),
+
+                "updated_at": updated_at,
+                "as_of_date": None,          # 혼동 컬럼 비움
+                "yf_symbol": used_symbol,
+                "alpha": float(alpha_single) if np.isfinite(alpha_single) else None,
+                "method": METHOD_SINGLE,
+                "created_at": created_at,
+                "price_interval": PRICE_INTERVAL,
+                "lookback_window": LOOKBACK_WINDOW,
+            })
+
+            single_ok_factors.append(fc)
+            single_status_parts.append(f"{fc}:OK")
 
         # ✅ 팩터별 overlap(티커 수익률과 동시에 존재하는 날짜 수) 계산
         ok_factors: List[str] = []
@@ -534,105 +676,85 @@ def main():
 
         skipped_factors = [fc for fc in factor_codes if fc not in ok_factors]
 
-        if not ok_factors:
-            report_rows.append({
-                "stock_code": stock_code,
-                "stock_name": stock_name,
-                "status": "SKIP",
-                "reason": f"no_factor_overlap(min_nobs={MIN_NOBS}) missing_in_db={missing_in_db}",
-                "used_symbol": used_symbol,
-                "asof_date": "",
-                "n_obs": 0,
-                "ok_factors": "",
-                "skipped_factors": "|".join(skipped_factors),
-            })
-            continue
+        multi_status = "SKIP"
+        multi_reason = f"no_factor_overlap(min_nobs={MIN_NOBS}) missing_in_db={missing_in_db}"
+        multi_asof_date = ""
+        multi_n_obs = 0
 
-        # 회귀용 데이터: ret_t + ok_factors만 subset dropna
-        need_cols = ["ret_t"] + ok_factors
-        df2 = df[need_cols].dropna().copy()
+        if ok_factors:
+            # 회귀용 데이터: ret_t + ok_factors만 subset dropna
+            need_cols = ["ret_t"] + ok_factors
+            df2 = df[need_cols].dropna().copy()
 
-        # window 제한 (최근 WINDOW_DAYS)
-        if len(df2) > WINDOW_DAYS:
-            df2 = df2.iloc[-WINDOW_DAYS:].copy()
+            # window 제한 (최근 WINDOW_DAYS)
+            if len(df2) > WINDOW_DAYS:
+                df2 = df2.iloc[-WINDOW_DAYS:].copy()
 
-        n_obs = int(df2.shape[0])
-        if n_obs < MIN_NOBS:
-            report_rows.append({
-                "stock_code": stock_code,
-                "stock_name": stock_name,
-                "status": "SKIP",
-                "reason": f"thin(n_obs={n_obs}) ok_factors={len(ok_factors)} skipped_factors={len(skipped_factors)}",
-                "used_symbol": used_symbol,
-                "asof_date": "",
-                "n_obs": n_obs,
-                "ok_factors": "|".join(ok_factors),
-                "skipped_factors": "|".join(skipped_factors),
-            })
-            continue
+            multi_n_obs = int(df2.shape[0])
+            if multi_n_obs < MIN_NOBS:
+                multi_reason = (
+                    f"thin(n_obs={multi_n_obs}) "
+                    f"ok_factors={len(ok_factors)} skipped_factors={len(skipped_factors)}"
+                )
+            else:
+                # 회귀
+                y = df2["ret_t"].astype(float).values
+                X = df2[ok_factors].astype(float).values
 
-        # 회귀
-        y = df2["ret_t"].astype(float).values
-        X = df2[ok_factors].astype(float).values
+                try:
+                    beta, alpha, r2 = ols_multi(y, X)
+                except Exception as e:
+                    multi_status = "FAIL"
+                    multi_reason = f"ols_exception:{e}"
+                else:
+                    multi_status = "OK"
+                    multi_reason = f"ok_factors={len(ok_factors)}, skipped_factors={len(skipped_factors)}"
 
-        try:
-            beta, alpha, r2 = ols_multi(y, X)
-        except Exception as e:
-            report_rows.append({
-                "stock_code": stock_code,
-                "stock_name": stock_name,
-                "status": "FAIL",
-                "reason": f"ols_exception:{e}",
-                "used_symbol": used_symbol,
-                "asof_date": "",
-                "n_obs": n_obs,
-                "ok_factors": "|".join(ok_factors),
-                "skipped_factors": "|".join(skipped_factors),
-            })
-            continue
+                    # asof_date: 실제 회귀 데이터의 마지막 날짜
+                    asof_date = df2.index.max()
+                    if isinstance(asof_date, (pd.Timestamp, dt.datetime)):
+                        asof_date = asof_date.date()
+                    if not isinstance(asof_date, dt.date):
+                        asof_date = end
 
-        # asof_date: 실제 회귀 데이터의 마지막 날짜
-        asof_date = df2.index.max()
-        if isinstance(asof_date, (pd.Timestamp, dt.datetime)):
-            asof_date = asof_date.date()
-        if not isinstance(asof_date, dt.date):
-            asof_date = end
+                    multi_asof_date = asof_date.isoformat()
 
-        updated_at = now_utc_iso()
-        created_at = updated_at
-        method = "OLS_MULTI"
+                    for i, fc in enumerate(ok_factors):
+                        upsert_rows.append({
+                            "asof_date": asof_date.isoformat(),
+                            "window_days": int(WINDOW_DAYS),
+                            "stock_code": stock_code,
+                            "factor_code": fc,
 
-        for i, fc in enumerate(ok_factors):
-            upsert_rows.append({
-                "asof_date": asof_date.isoformat(),
-                "window_days": int(WINDOW_DAYS),
-                "stock_code": stock_code,
-                "factor_code": fc,
+                            "beta": float(beta[i]) if np.isfinite(beta[i]) else None,
+                            "r2": float(r2) if np.isfinite(r2) else None,
+                            "n_obs": int(multi_n_obs),
 
-                "beta": float(beta[i]) if np.isfinite(beta[i]) else None,
-                "r2": float(r2) if np.isfinite(r2) else None,
-                "n_obs": int(n_obs),
-
-                "updated_at": updated_at,
-                "as_of_date": None,          # 혼동 컬럼 비움
-                "yf_symbol": used_symbol,
-                "alpha": float(alpha) if np.isfinite(alpha) else None,
-                "method": method,
-                "created_at": created_at,
-                "price_interval": PRICE_INTERVAL,
-                "lookback_window": LOOKBACK_WINDOW,
-            })
+                            "updated_at": updated_at,
+                            "as_of_date": None,          # 혼동 컬럼 비움
+                            "yf_symbol": used_symbol,
+                            "alpha": float(alpha) if np.isfinite(alpha) else None,
+                            "method": METHOD_MULTI,
+                            "created_at": created_at,
+                            "price_interval": PRICE_INTERVAL,
+                            "lookback_window": LOOKBACK_WINDOW,
+                        })
 
         report_rows.append({
             "stock_code": stock_code,
             "stock_name": stock_name,
-            "status": "OK",
-            "reason": f"ok_factors={len(ok_factors)}, skipped_factors={len(skipped_factors)}",
+            "status": multi_status,
+            "reason": multi_reason,
             "used_symbol": used_symbol,
-            "asof_date": asof_date.isoformat(),
-            "n_obs": n_obs,
+            "asof_date": multi_asof_date,
+            "n_obs": multi_n_obs,
             "ok_factors": "|".join(ok_factors),
             "skipped_factors": "|".join(skipped_factors),
+            "single_ok_factors": "|".join(single_ok_factors),
+            "single_skipped_factors": "|".join(single_skipped_factors),
+            "single_failed_factors": "|".join(single_failed_factors),
+            "single_status_map": "|".join(single_status_parts),
+            "single_n_obs_map": "|".join(single_n_obs_parts),
         })
 
     # DB upsert
