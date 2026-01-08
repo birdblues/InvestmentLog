@@ -102,7 +102,7 @@ def fetch_balance_stock(token, app_key, app_secret, acc_no):
             tot_amt = int(out2['tot_evlu_amt'])
             stock_amt = int(out2['scts_evlu_amt'])
             try:
-                cash_amt = int(out2['dnca_tot_amt'])
+                cash_amt = int(out2['prvs_rcdl_excc_amt'])
             except:
                 cash_amt = tot_amt - stock_amt
 
@@ -189,6 +189,10 @@ def fetch_balance_irp(token, app_key, app_secret, acc_no):
         if tot_amt == 0 and data['output2']:
             out2 = data['output2']
             tot_amt = int(out2.get('tot_evlu_amt', 0))
+            try:
+                cash_amt = int(out2.get('prvs_rcdl_excc_amt', 0))
+            except:
+                pass
             
         # 보유 종목 추가
         if data['output1']:
@@ -232,7 +236,9 @@ def fetch_balance_irp(token, app_key, app_secret, acc_no):
     
     # IRP 현금 = 총자산 - 주식평가합 (역산)
     sum_holdings = sum(h['eval_amt'] for h in final_holdings)
-    cash_amt = tot_amt - sum_holdings
+    
+    if cash_amt == 0:
+        cash_amt = tot_amt - sum_holdings
     
     return {
         "total_asset": tot_amt,
