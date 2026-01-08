@@ -46,6 +46,10 @@ import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
 from supabase import create_client, Client
+try:
+    from pykrx import stock as krx_stock
+except Exception:  # optional dependency
+    krx_stock = None
 
 load_dotenv(override=False)
 
@@ -117,6 +121,22 @@ def log_returns_from_price(px: pd.Series) -> pd.Series:
     px = px[px > 0]
     r = (np.log(px) - np.log(px.shift(1))).dropna()
     return r
+
+
+def lookback_window_to_days(window: str) -> int:
+    w = (window or "").strip().lower()
+    m = re.fullmatch(r"(\d+)\s*(d|day|days|mo|m|mon|month|months|y|yr|year|years)", w)
+    if not m:
+        return 730
+    n = int(m.group(1))
+    unit = m.group(2)
+    if unit in ("d", "day", "days"):
+        return n
+    if unit in ("mo", "m", "mon", "month", "months"):
+        return n * 30
+    if unit in ("y", "yr", "year", "years"):
+        return n * 365
+    return 730
 
 
 # -----------------------------
@@ -199,6 +219,18 @@ def pad_krx_code(code: str) -> Optional[str]:
     return None
 
 
+def to_pykrx_code(stock_code: str) -> Optional[str]:
+    code = normalize_code(stock_code)
+    if re.fullmatch(r"Q(\d{6})", code):
+        return code[1:]
+    if is_krx_6digits(code):
+        return code
+    padded = pad_krx_code(code)
+    if padded:
+        return padded
+    return None
+
+
 def generate_candidates(stock_code: str, yf_symbol: str = "") -> Tuple[List[str], str]:
     code = normalize_code(stock_code)
 
@@ -258,7 +290,7 @@ def generate_candidates(stock_code: str, yf_symbol: str = "") -> Tuple[List[str]
 # -----------------------------
 # Price returns (yfinance)
 # -----------------------------
-def fetch_price_returns(symbol: str, end_date: dt.date) -> Optional[pd.Series]:
+def fetch_price_returns_yf(symbol: str, end_date: dt.date) -> Optional[pd.Series]:
     """
     - Adj Close 우선, 없으면 Close
     - index -> date로 정규화
@@ -292,6 +324,47 @@ def fetch_price_returns(symbol: str, end_date: dt.date) -> Optional[pd.Series]:
     px = px.sort_index()
     px = px[px.index.notna()]
 
+    px = px[px.index.date <= end_date]
+    if px.empty or len(px) < (MIN_NOBS + 5):
+        return None
+
+    ret = log_returns_from_price(px)
+    ret.index = pd.to_datetime(ret.index).date
+    ret = ret.sort_index()
+    return ret
+
+
+def fetch_price_returns_krx(stock_code: str, end_date: dt.date) -> Optional[pd.Series]:
+    if krx_stock is None:
+        return None
+    code = to_pykrx_code(stock_code)
+    if not code:
+        return None
+
+    lookback_days = lookback_window_to_days(LOOKBACK_WINDOW)
+    start_date = end_date - dt.timedelta(days=lookback_days + 7)
+    start_s = start_date.strftime("%Y%m%d")
+    end_s = end_date.strftime("%Y%m%d")
+
+    try:
+        df = krx_stock.get_market_ohlcv_by_date(start_s, end_s, code)
+    except Exception:
+        return None
+    if df is None or df.empty:
+        return None
+
+    col = "종가" if "종가" in df.columns else ("Close" if "Close" in df.columns else None)
+    if col is None:
+        col = df.columns[0]
+
+    px = pd.to_numeric(df[col], errors="coerce").dropna()
+    if px.empty or len(px) < (MIN_NOBS + 5):
+        return None
+
+    idx = pd.to_datetime(px.index, errors="coerce")
+    px.index = idx
+    px = px.sort_index()
+    px = px[px.index.notna()]
     px = px[px.index.date <= end_date]
     if px.empty or len(px) < (MIN_NOBS + 5):
         return None
@@ -564,11 +637,16 @@ def main():
         used_symbol = ""
         ret_t: Optional[pd.Series] = None
 
-        for sym in candidates:
-            ret_t = fetch_price_returns(sym, end_date=end)
-            if ret_t is not None and not ret_t.empty:
-                used_symbol = sym
-                break
+        ret_t = fetch_price_returns_krx(stock_code, end_date=end)
+        if ret_t is not None and not ret_t.empty:
+            used_symbol = f"KRX:{to_pykrx_code(stock_code)}"
+
+        if ret_t is None or ret_t.empty:
+            for sym in candidates:
+                ret_t = fetch_price_returns_yf(sym, end_date=end)
+                if ret_t is not None and not ret_t.empty:
+                    used_symbol = sym
+                    break
 
         if ret_t is None or ret_t.empty:
             report_rows.append({

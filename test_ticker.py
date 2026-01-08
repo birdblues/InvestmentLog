@@ -28,13 +28,17 @@ Optional (override):
 import os
 import sys
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import yfinance as yf
 from supabase import create_client, Client
 from dotenv import load_dotenv
+try:
+    from pykrx import stock as krx_stock
+except Exception:  # optional dependency
+    krx_stock = None
 
 load_dotenv()
 
@@ -46,10 +50,64 @@ TABLE = "ticker_category_map"
 
 DEFAULT_PROBE_PERIOD = "3mo"
 DEFAULT_PROBE_INTERVAL = "1d"
-DEFAULT_MIN_ROWS = 40
+DEFAULT_MIN_ROWS = 20
 
 DEFAULT_WRITE_BACK = True
 DEFAULT_CLEAR_SYMBOL_ON_FAIL = False
+
+
+# ---------------------------
+# Period helpers
+# ---------------------------
+def period_to_days(period: str) -> int:
+    p = (period or "").strip().lower()
+    m = re.fullmatch(r"(\d+)\s*(d|day|days|mo|m|mon|month|months|y|yr|year|years)", p)
+    if not m:
+        return 90
+    n = int(m.group(1))
+    unit = m.group(2)
+    if unit in ("d", "day", "days"):
+        return n
+    if unit in ("mo", "m", "mon", "month", "months"):
+        return n * 30
+    if unit in ("y", "yr", "year", "years"):
+        return n * 365
+    return 90
+
+
+# ---------------------------
+# pykrx probing
+# ---------------------------
+def to_pykrx_code(stock_code: str) -> Optional[str]:
+    code = normalize_code(stock_code)
+    if re.fullmatch(r"Q(\d{6})", code):
+        return code[1:]
+    if is_krx_6digits(code):
+        return code
+    padded = pad_krx_code(code)
+    if padded:
+        return padded
+    return None
+
+
+def probe_pykrx(code: str, days: int) -> Tuple[bool, int, Optional[str], Optional[str], str]:
+    if krx_stock is None:
+        return False, 0, None, None, "pykrx_unavailable"
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days)
+    start_s = start_date.strftime("%Y%m%d")
+    end_s = end_date.strftime("%Y%m%d")
+    try:
+        df = krx_stock.get_market_ohlcv_by_date(start_s, end_s, code)
+    except Exception as e:
+        return False, 0, None, None, f"pykrx_exception:{e}"
+    if df is None or df.empty:
+        return False, 0, None, None, "pykrx_empty"
+
+    idx = pd.to_datetime(df.index, errors="coerce")
+    first_date = idx.min().date().isoformat() if len(idx) else None
+    last_date = idx.max().date().isoformat() if len(idx) else None
+    return True, int(df.shape[0]), first_date, last_date, "pykrx_ok"
 
 
 # ---------------------------
@@ -230,6 +288,7 @@ def main():
     period = os.environ.get("YF_PROBE_PERIOD", DEFAULT_PROBE_PERIOD)
     interval = os.environ.get("YF_PROBE_INTERVAL", DEFAULT_PROBE_INTERVAL)
     min_rows = int(os.environ.get("YF_MIN_ROWS", str(DEFAULT_MIN_ROWS)))
+    pykrx_days = period_to_days(period)
     out_csv = os.environ.get("OUT_CSV") or f"./yf_symbol_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
     write_back = os.environ.get("WRITE_BACK")
@@ -286,6 +345,48 @@ def main():
                 "manual_hint": recommend_manual_mapping_hint(stock_code, stock_name),
             })
             continue
+
+        # pykrx 먼저 시도 (Q 접두는 제거)
+        pykrx_code = to_pykrx_code(stock_code)
+        if pykrx_code:
+            ok, n, fdt, ldt, reason = probe_pykrx(pykrx_code, days=pykrx_days)
+            if ok:
+                status = "OK" if n >= min_rows else "THIN"
+                cnt[status] += 1
+
+                report_rows.append({
+                    "stock_code": stock_code,
+                    "stock_name": stock_name,
+                    "asset_type": asset_type,
+                    "country": country,
+                    "currency": currency,
+                    "tags": tags,
+                    "candidates": f"KRX:{pykrx_code}",
+                    "matched_symbol": f"KRX:{pykrx_code}",
+                    "status": status,
+                    "n_rows": n,
+                    "first_date": fdt or "",
+                    "last_date": ldt or "",
+                    "probe_period": period,
+                    "probe_interval": interval,
+                    "heuristic": "pykrx_first",
+                    "reason": reason,
+                    "manual_hint": "" if status == "OK" else "데이터는 있으나 표본 부족 → 기간 확대/다른 소스 고려",
+                })
+
+                if write_back_flag:
+                    payload = {
+                        "yf_status": status,
+                        "yf_n_rows": n,
+                        "yf_first_date": fdt or None,
+                        "yf_last_date": ldt or None,
+                        "yf_probe_interval": interval,
+                        "yf_probe_period": period,
+                        "yf_reason": reason,
+                        "yf_checked_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    write_back_probe_result(sb, stock_code, payload)
+                continue
 
         if yf_symbol:
             candidates = [yf_symbol]
@@ -466,7 +567,7 @@ def main():
     head = report[report["status"].isin(["FAIL", "MANUAL", "THIN"])].head(30)
     if not head.empty:
         print("\n[Top issues]")
-        print(head[["status", "stock_code", "stock_name", "candidates", "reason", "manual_hint"]].to_string(index=False))
+        print(head[["status", "stock_code", "stock_name", "candidates", "n_rows", "reason", "manual_hint"]].to_string(index=False))
 
 
 if __name__ == "__main__":

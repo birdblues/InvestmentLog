@@ -5,3 +5,5 @@ keyring
 numpy
 pandas
 yfinance
+pykrx
+setuptools<81
