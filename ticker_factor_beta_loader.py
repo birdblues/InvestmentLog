@@ -36,6 +36,7 @@ Env:
 
 from __future__ import annotations
 
+import warnings
 import os
 import re
 import datetime as dt
@@ -46,6 +47,12 @@ import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
 from supabase import create_client, Client
+
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API",
+    category=UserWarning,
+)
 try:
     from pykrx import stock as krx_stock
 except Exception:  # optional dependency

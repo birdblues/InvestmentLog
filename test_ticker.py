@@ -25,6 +25,7 @@ Optional (override):
   CLEAR_SYMBOL_ON_FAIL=false     # true면 FAIL일 때 yf_symbol도 None으로 지움
 """
 
+import warnings
 import os
 import sys
 import re
@@ -35,6 +36,12 @@ import pandas as pd
 import yfinance as yf
 from supabase import create_client, Client
 from dotenv import load_dotenv
+
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API",
+    category=UserWarning,
+)
 try:
     from pykrx import stock as krx_stock
 except Exception:  # optional dependency
