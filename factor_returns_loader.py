@@ -58,6 +58,9 @@ KST_TZ = "Asia/Seoul"
 # lookback (safety buffer)
 LOOKBACK_DAYS_DAILY = 14
 LOOKBACK_MONTHS_MONTHLY = 2
+DURATION_US10Y = 8.5
+DURATION_KR10Y = 8.5
+DURATION_US_HY_OAS = 4.5
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,8 @@ class FactorSpec:
     source: str                 # "FRED" | "ECOS" | "NASDAQ_DATALINK" | "YFINANCE"
     source_series: str          # e.g. "DGS10" or "817Y002/D/010210000" or "KRW=X"
     frequency: str              # "D" or "M"
-    ret_type: str               # "log_return" or "diff_pp"
+    ret_type: str               # "log_return" | "diff_pp" | "duration_return"
+    duration_years: Optional[float] = None
 
     # ECOS specific
     ecos_stat_code: Optional[str] = None
@@ -312,7 +316,7 @@ def yfinance_fetch_close_series(
 # ----------------------------
 # Returns
 # ----------------------------
-def compute_returns(level: pd.Series, ret_type: str) -> pd.Series:
+def compute_returns(level: pd.Series, ret_type: str, duration_years: Optional[float] = None) -> pd.Series:
     level = level.dropna().astype(float)
 
     if ret_type == "log_return":
@@ -320,6 +324,11 @@ def compute_returns(level: pd.Series, ret_type: str) -> pd.Series:
         return (level.apply(math.log) - level.shift(1).apply(math.log))
     if ret_type == "diff_pp":
         return level - level.shift(1)
+    if ret_type == "duration_return":
+        if duration_years is None:
+            duration_years = DURATION_US10Y
+        diff_pp = level - level.shift(1)
+        return -float(duration_years) * (diff_pp / 100.0)
 
     raise ValueError(f"Unsupported ret_type: {ret_type}")
 
@@ -367,7 +376,8 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
             source="FRED",
             source_series="DGS10",
             frequency="D",
-            ret_type="diff_pp",
+            ret_type="duration_return",
+            duration_years=DURATION_US10Y,
         ),
         FactorSpec(
             factor_code="F_RATE_KR10Y",
@@ -375,7 +385,8 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
             source="ECOS",
             source_series="817Y002/D/010210000",
             frequency="D",
-            ret_type="diff_pp",
+            ret_type="duration_return",
+            duration_years=DURATION_KR10Y,
             ecos_stat_code="817Y002",
             ecos_cycle="D",
             ecos_item_code="010210000",
@@ -403,7 +414,8 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
             source="FRED",
             source_series="BAMLH0A0HYM2",
             frequency="D",
-            ret_type="diff_pp",
+            ret_type="duration_return",
+            duration_years=DURATION_US_HY_OAS,
         ),
         FactorSpec(
             factor_code="F_INFL_US_BE10Y",
@@ -544,7 +556,7 @@ def main():
                 print(f"[INFO] {spec.factor_code}: series empty/too short")
                 continue
 
-            ret = compute_returns(level, spec.ret_type)
+            ret = compute_returns(level, spec.ret_type, spec.duration_years)
             df = pd.DataFrame({"level": level, "ret": ret})
             df = df.sort_index()
 
