@@ -19,6 +19,12 @@
 - `FACTOR_ZSCORE_WINDOW_DAYS`(.env)로 롤링 윈도우 길이를 설정합니다.
 - 비영일(`ret != 0`)만으로 평균/표준편차를 계산하고, `ret=0`은 `ret_z=0`으로 둡니다.
 
+## 가격 데이터 소스 정책
+- 가격 수익률은 `pykrx(KRX)`를 우선 사용하고, 실패 시 `yfinance`로 폴백합니다.
+- ETN은 `ticker_category_map.stock_code`에 `Q` 접두를 사용합니다. (`Q500095` 등)
+- `pykrx` 조회 시에는 `Q` 접두를 제거한 6자리 코드로 조회합니다. (`Q500095` → `500095`)
+- `ticker_category_map.yf_symbol`은 `KRX:500095`처럼 `KRX:` 접두로도 저장할 수 있으며, 이 값은 yfinance 후보 생성에서는 무시합니다.
+
 ## 멀티 vs 단일 팩터 회귀 기준
 - 멀티 팩터 회귀는 다른 팩터를 통제한 순수 노출(부분효과), 단일 팩터 회귀는 공분산이 섞인 총 노출(마진효과)로 해석합니다.
 - 멀티 팩터 장점: 공분산 통제, 팩터 간 중복 노출 분리, 리스크 분해/헤지 설계에 유리, 설명력 높음.
@@ -27,6 +33,23 @@
 - 단일 팩터 단점: 누락 변수 편향, 공통 노출 과대/과소 추정 가능, 리스크 관리/헤지에 부정확.
 - 추천: 리스크 관리/헤지/정교한 분해는 멀티, 커뮤니케이션/직관 리포팅은 단일 병행. 단일=총노출, 멀티=순수노출로 병기하면 이해가 쉬움.
 - 멀티가 불안정하면 Ridge/Lasso, 팩터 축소(PCA), 최소 관측치 강화, 공선성 체크(VIF) 등을 고려합니다.
+### 포트폴리오 관리 적용 가이드
+- 싱글(총 노출): 커뮤니케이션/직관/랭킹용. “노출을 키우고/줄이고 싶다”는 방향성 선택에 적합.
+- 멀티(순수 노출): 리스크 관리/헤지/중복 노출 제거에 적합. 실제 리스크 분해에 사용.
+- 전략적 방향(노출 조정)은 싱글, 전체 리스크 관리는 멀티를 사용합니다.
+- 리스크 관리용 팩터 확장 후보:
+  - Gold(금): 대체자산 20%의 대부분이 금이므로 필수 축.
+  - US Equity ex-US 또는 Global ex-US: 주식 30% 중 30%가 US 외 지역이라 지역 리스크 분리가 필요.
+  - IG OAS(투자등급 크레딧): 채권이 US 국채 중심이라 HY보다 IG 스프레드가 더 관련성 높음.
+  - FX JPYKRW, EURKRW: 현금/헷지에 JPY·EUR가 들어가므로 KRW 기준 리스크 축 분리.
+  - Curve(US 2y–10y): 금리 레벨과 경기/정책 경로 리스크 분리.
+  - Real Yield(미국 실질금리): BEI와 분리해 실질 vs 인플레 리스크를 분해.
+- 싱글 기반 종목 선별은 가능하나, 아래 보완 절차 권장:
+  - 1단계: 목표 팩터 정의 (예: `F_VOL_VIX` 노출 낮추기)
+  - 2단계: 싱글 베타로 1차 후보 풀 랭킹
+  - 3단계: 멀티 베타로 교차 검증 (부호 반전/과도한 공선성 노출 제외)
+  - 4단계: 핵심 팩터 중립 조건 추가 (예: `F_GROWTH_US_EQ` 멀티 노출 ±X 이내)
+  - 5단계: 싱글/멀티 `asof_date` 및 표본 기간 정합 확인
 
 ## 파일별 요약
 - `main.py`: 한국투자 API 토큰/잔고 조회 → Supabase 저장 메인 워크플로
@@ -39,6 +62,7 @@
 - `ticker_factor_beta_loader.py`: 티커 수익률 + 팩터 수익률로 베타 계산 후 업서트/리포트 생성
 - `create_factor_returns_zscore_view.py`: 팩터 수익률 z-score 뷰 SQL 생성(윈도우 길이 .env)
 - `view_factor_returns_zscore.sql`: z-score 뷰 생성 SQL(스크립트 출력물)
+- `view_portfolio_factor_exposure_multi_z.sql`: 포트폴리오 팩터 노출도(OLS_MULTI_Z) 뷰 SQL
 - `test_ticker.py`: yfinance 심볼 가용성 점검 + 결과 write-back/리포트 생성
 - `debug_factor_presence.py`: `factor_returns` 데이터 존재/기간/결측 점검
 - `inspect_schema.py`: `factor_returns` 샘플 조회로 컬럼 확인
@@ -49,10 +73,18 @@
 - `README.md`: 최소 안내 문서
 - `AGENTS.md`: 프로젝트 가이드라인/메모
 
+## DB 스키마 요약 (public)
+- Tables: `asset_holdings`, `asset_snapshot`, `factor_returns`, `manual_cash_flow`, `market_returns`, `ticker_category_map`, `ticker_factor_beta_long`
+- Views (기본): `ticker_factor_beta_long_v`, `view_factor_returns_zscore`, `view_rebalancing_summary`, `view_ticker_category_map_tag_array`, `view_ticker_factor_beta_long_zscore`
+- Views (일간/노출): `view_daily_cash_report`, `view_daily_country_exposure`, `view_daily_currency_exposure`, `view_daily_factor_exposure`, `view_daily_long_rate_by_sleeve`, `view_daily_long_rate_top_tickers`, `view_daily_net_worth`, `view_daily_portfolio_final`, `view_daily_rate_short_factor`, `view_daily_sleeve_exposure`
+- Views (포트폴리오 팩터): `view_portfolio_factor_exposure_multi_raw`, `view_portfolio_factor_exposure_multi_z`, `view_portfolio_factor_exposure_single_raw`, `view_portfolio_factor_exposure_single_raw_summary`, `view_portfolio_factor_exposure_single_summary`, `view_portfolio_factor_exposure_single_z`, `view_portfolio_factor_exposure_single_z_summary`
+- Views (리스크 요약): `view_portfolio_factor_risk_contrib_multi_raw`, `view_portfolio_factor_risk_contrib_multi_z`, `view_portfolio_factor_risk_summary_multi_raw`, `view_portfolio_factor_risk_summary_multi_z`
+
 ## 빌드, 테스트, 개발 명령어
 - `python main.py`로 전체 작업을 실행합니다(환경 변수 필요, 보안/설정 참고).
 - 빌드 단계는 없으며 단일 파이썬 스크립트로 동작합니다.
 - 테스트 러너는 아직 구성되어 있지 않습니다.
+- 파이썬 실행/스크립트는 `uv run` 사용을 권장합니다.
 
 ## 코딩 스타일 및 네이밍 규칙
 - PEP 8 기준, 4칸 들여쓰기를 사용합니다.

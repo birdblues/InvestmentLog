@@ -96,6 +96,31 @@ REPORT_CSV_PATH = "./beta_run_report.csv"
 
 LAG_POLICY_DEFAULT = 0
 
+SINGLE_FACTOR_CODES = [
+    "F_GROWTH_US_EQ",
+    "F_GROWTH_EXUS_EQ",
+    "F_RATE_US10Y",
+    "F_RATE_US10Y_REAL",
+    "F_CURVE_US_2Y10Y",
+    "F_RATE_KR10Y",
+    "F_CURR_USDKRW",
+    "F_VOL_VIX",
+    "F_CREDIT_US_HY_OAS",
+    "F_CREDIT_US_IG_OAS",
+    "F_INFL_US_BE10Y",
+    "F_COMM_OIL_WTI",
+    "F_COMM_GOLD_KR",
+    # "F_INFL_KR_CPI",  # 월간 CPI는 일단 베타 계산에서 제외
+]
+
+MULTI_FACTOR_CODES = [
+    "F_GROWTH_US_EQ",
+    "F_RATE_US10Y",
+    "F_CURR_USDKRW",
+    "F_CREDIT_US_IG_OAS",
+    "F_COMM_GOLD_KR",
+]
+
 
 # -----------------------------
 # Utilities
@@ -109,6 +134,17 @@ def env_required(name: str) -> str:
 
 def now_utc_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def dedup_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
 
 
 def _ensure_series(x) -> pd.Series:
@@ -246,7 +282,7 @@ def generate_candidates(stock_code: str, yf_symbol: str = "") -> Tuple[List[str]
 
     if yf_symbol:
         sym = yf_symbol.strip()
-        if sym:
+        if sym and (not sym.upper().startswith("KRX:")):
             return [sym], "prefer:yf_symbol"
 
     if code.endswith(".KS") or code.endswith(".KQ"):
@@ -563,25 +599,16 @@ def main():
     if tickers.empty:
         raise RuntimeError("ticker_category_map is empty")
 
-    # ✅ 기본 팩터 목록 (원하면 여기에 더 추가/삭제)
-    factor_codes = [
-        "F_GROWTH_US_EQ",
-        "F_RATE_US10Y",
-        "F_RATE_KR10Y",
-        "F_CURR_USDKRW",
-        "F_VOL_VIX",
-        "F_CREDIT_US_HY_OAS",
-        "F_INFL_US_BE10Y",
-        "F_COMM_OIL_WTI",
-        # "F_INFL_KR_CPI",  # 월간 CPI는 일단 베타 계산에서 제외
-    ]
+    factor_codes = dedup_keep_order(SINGLE_FACTOR_CODES + MULTI_FACTOR_CODES)
 
     # factor는 최근 구간만 필요: 2y + buffer
     start_date = end - dt.timedelta(days=365 * 2 + 120)
 
     fdf_raw = fetch_factor_returns(sb, factor_codes=factor_codes, end_date=end, start_date=start_date)
     present = sorted(fdf_raw["factor_code"].unique().tolist()) if not fdf_raw.empty else []
-    missing_in_db = [c for c in factor_codes if c not in present]
+    missing_in_db_single = [c for c in SINGLE_FACTOR_CODES if c not in present]
+    missing_in_db_multi = [c for c in MULTI_FACTOR_CODES if c not in present]
+    missing_in_db = dedup_keep_order(missing_in_db_single + missing_in_db_multi)
 
     fdf = apply_factor_lags(fdf_raw)
 
@@ -699,7 +726,8 @@ def main():
         df = df.join(fwide, how="inner")
 
         # 실제 존재하는 factor만
-        available_factors = [c for c in factor_codes if c in df.columns]
+        available_single_factors = [c for c in SINGLE_FACTOR_CODES if c in df.columns]
+        available_multi_factors = [c for c in MULTI_FACTOR_CODES if c in df.columns]
 
         # -----------------------------
         # Single-factor regressions
@@ -713,7 +741,7 @@ def main():
         updated_at = now_utc_iso()
         created_at = updated_at
 
-        for fc in available_factors:
+        for fc in available_single_factors:
             df_single = df[["ret_t", fc]].dropna()
 
             if len(df_single) > WINDOW_DAYS:
@@ -769,17 +797,17 @@ def main():
         # ✅ 팩터별 overlap(티커 수익률과 동시에 존재하는 날짜 수) 계산
         ok_factors: List[str] = []
         overlap_map: Dict[str, int] = {}
-        for fc in available_factors:
+        for fc in available_multi_factors:
             tmp = df[["ret_t", fc]].dropna()
             overlap = int(tmp.shape[0])
             overlap_map[fc] = overlap
             if overlap >= MIN_NOBS:
                 ok_factors.append(fc)
 
-        skipped_factors = [fc for fc in factor_codes if fc not in ok_factors]
+        skipped_factors = [fc for fc in MULTI_FACTOR_CODES if fc not in ok_factors]
 
         multi_status = "SKIP"
-        multi_reason = f"no_factor_overlap(min_nobs={MIN_NOBS}) missing_in_db={missing_in_db}"
+        multi_reason = f"no_factor_overlap(min_nobs={MIN_NOBS}) missing_in_db={missing_in_db_multi}"
         multi_asof_date = ""
         multi_n_obs = 0
 

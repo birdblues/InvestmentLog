@@ -396,6 +396,8 @@ def main():
                 continue
 
         if yf_symbol:
+            if yf_symbol.strip().upper().startswith("KRX:"):
+                yf_symbol = ""
             candidates = [yf_symbol]
             heur_note = "prefer:yf_symbol"
         else:

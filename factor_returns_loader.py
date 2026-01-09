@@ -40,6 +40,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 from dotenv import load_dotenv
+from pykrx import stock
 from supabase import create_client, Client
 
 # ----------------------------
@@ -61,13 +62,14 @@ LOOKBACK_MONTHS_MONTHLY = 2
 DURATION_US10Y = 8.5
 DURATION_KR10Y = 8.5
 DURATION_US_HY_OAS = 4.5
+DURATION_US_IG_OAS = 6.0
 
 
 @dataclass(frozen=True)
 class FactorSpec:
     factor_code: str
     factor_name: str
-    source: str                 # "FRED" | "ECOS" | "NASDAQ_DATALINK" | "YFINANCE"
+    source: str                 # "FRED" | "ECOS" | "NASDAQ_DATALINK" | "YFINANCE" | "PYKRX"
     source_series: str          # e.g. "DGS10" or "817Y002/D/010210000" or "KRW=X"
     frequency: str              # "D" or "M"
     ret_type: str               # "log_return" | "diff_pp" | "duration_return"
@@ -313,6 +315,30 @@ def yfinance_fetch_close_series(
     raise RuntimeError(f"yfinance fetch failed for {symbols}. last_err={last_err}")
 
 
+def pykrx_fetch_close_series(
+    ticker: str,
+    start: dt.date,
+    end_inclusive: dt.date,
+) -> pd.Series:
+    ticker = ticker.replace("KRX:", "").lstrip("Q")
+    start_str = start.strftime("%Y%m%d")
+    end_str = end_inclusive.strftime("%Y%m%d")
+
+    df = stock.get_market_ohlcv_by_date(start_str, end_str, ticker)
+    if df is None or df.empty:
+        raise RuntimeError(f"pykrx fetch returned empty for {ticker}")
+
+    if "종가" not in df.columns:
+        raise RuntimeError(f"pykrx missing Close column for {ticker}")
+
+    s = df["종가"].dropna()
+    if s.empty or len(s) < 2:
+        raise RuntimeError(f"pykrx close series too short for {ticker}")
+
+    s.index = _to_naive_datetime_index(s.index)
+    return s.sort_index().astype(float)
+
+
 # ----------------------------
 # Returns
 # ----------------------------
@@ -371,6 +397,15 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
             ret_type="log_return",
         ),
         FactorSpec(
+            factor_code="F_GROWTH_EXUS_EQ",
+            factor_name="경기/위험자산(글로벌 주식 ex-US, VXUS)",
+            source="YFINANCE",
+            source_series="VXUS",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["VXUS", "VEU"],
+        ),
+        FactorSpec(
             factor_code="F_RATE_US10Y",
             factor_name="금리(미국 10Y 국채수익률)",
             source="FRED",
@@ -378,6 +413,23 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
             frequency="D",
             ret_type="duration_return",
             duration_years=DURATION_US10Y,
+        ),
+        FactorSpec(
+            factor_code="F_RATE_US10Y_REAL",
+            factor_name="금리(미국 10Y 실질금리)",
+            source="FRED",
+            source_series="DFII10",
+            frequency="D",
+            ret_type="duration_return",
+            duration_years=DURATION_US10Y,
+        ),
+        FactorSpec(
+            factor_code="F_CURVE_US_2Y10Y",
+            factor_name="금리커브(미국 2Y-10Y, 10Y-2Y)",
+            source="FRED",
+            source_series="T10Y2Y",
+            frequency="D",
+            ret_type="diff_pp",
         ),
         FactorSpec(
             factor_code="F_RATE_KR10Y",
@@ -418,6 +470,15 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
             duration_years=DURATION_US_HY_OAS,
         ),
         FactorSpec(
+            factor_code="F_CREDIT_US_IG_OAS",
+            factor_name="크레딧(미국 IG OAS)",
+            source="FRED",
+            source_series="BAMLC0A0CM",
+            frequency="D",
+            ret_type="duration_return",
+            duration_years=DURATION_US_IG_OAS,
+        ),
+        FactorSpec(
             factor_code="F_INFL_US_BE10Y",
             factor_name="물가(미국 10Y 기대인플레, BEI)",
             source="FRED",
@@ -444,6 +505,14 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
             frequency="D",
             ret_type="log_return",
         ),
+        FactorSpec(
+            factor_code="F_COMM_GOLD_KR",
+            factor_name="원자재(금, KRX 411060)",
+            source="PYKRX",
+            source_series="411060",
+            frequency="D",
+            ret_type="log_return",
+        ),
     ]
 
     if nasdaq_enabled:
@@ -463,7 +532,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
 
 def source_tz_label(source: str) -> str:
     # date-only 관측치가 대부분이라 tz 의미는 약함. 디버깅용 라벨만 남김.
-    if source in ("FRED", "ECOS", "NASDAQ_DATALINK"):
+    if source in ("FRED", "ECOS", "NASDAQ_DATALINK", "PYKRX"):
         return "date-only"
     if source == "YFINANCE":
         return "yfinance-index"
@@ -537,6 +606,9 @@ def main():
                     print(f"[SKIP] {spec.factor_code}: NASDAQ_DATALINK_API_KEY not set")
                     continue
                 level = nasdaq_datalink_fetch_series(nasdaq_key, spec.source_series, start_fetch, end)
+
+            elif spec.source == "PYKRX":
+                level = pykrx_fetch_close_series(spec.source_series, start_fetch, end)
 
             elif spec.source == "YFINANCE":
                 cands = spec.yf_candidates or [spec.source_series]
