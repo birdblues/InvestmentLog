@@ -1,5 +1,6 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../../models/portfolio_item.dart';
 import '../../services/portfolio_service.dart';
 
@@ -167,10 +168,7 @@ class _PortfolioCardState extends State<PortfolioCard> {
   }
 
   String _formatCurrency(int amount) {
-    // Simple formatter, can use intl package ideally
-    return amount.toString().replaceAllMapped(
-      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
-      (Match m) => '${m[1]},',
-    );
+    final formatter = NumberFormat.currency(locale: 'ko_KR', symbol: '', decimalDigits: 0);
+    return formatter.format(amount);
   }
 }

@@ -164,6 +164,7 @@ class _ValuationChartState extends State<ValuationChart> {
                             return FlSpot(e.key.toDouble(), e.value.principal);
                           }).toList(),
                           isCurved: false,
+                          isStepLineChart: true, // Step style
                           color: const Color(0xFF6B7280),
                           barWidth: 2,
                           isStrokeCapRound: true,
