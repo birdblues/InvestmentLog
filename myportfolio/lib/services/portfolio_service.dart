@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/portfolio_item.dart';
 import '../models/valuation_item.dart';
 import '../models/asset_summary_model.dart';
+import 'package:intl/intl.dart';
 
 class PortfolioService {
   Future<AssetSummaryModel?> getAssetSummary() async {
@@ -90,6 +91,188 @@ class PortfolioService {
       return data.map((e) => ValuationItem.fromJson(e)).toList();
     } catch (e) {
       debugPrint('Error fetching valuation history: $e');
+      return [];
+    }
+  }
+  Future<List<Map<String, dynamic>>> getFactorSensitivity() async {
+    try {
+      // 1. Get the latest portfolio_date
+      final dateResponse = await Supabase.instance.client
+          .from('view_portfolio_factor_exposure_multi_z')
+          .select('portfolio_date')
+          .order('portfolio_date', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (dateResponse == null) return [];
+      final latestDate = dateResponse['portfolio_date'];
+
+      // 2. Fetch data for that date
+      final response = await Supabase.instance.client
+          .from('view_portfolio_factor_exposure_multi_z')
+          .select()
+          .eq('portfolio_date', latestDate);
+
+      final data = response as List<dynamic>;
+
+      // 3. Map factor codes to display names
+      // 금리 F_RATE_US10Y
+      // 환율 F_CURR_USDKRW
+      // 원자재 F_COMM_GOLD_KR
+      // 신용 F_CREDIT_US_IG_OAS
+      // 경기 F_GROWTH_US_EQ
+      final Map<String, String> factorMap = {
+        'F_RATE_US10Y': '금리',
+        'F_CURR_USDKRW': '환율',
+        'F_COMM_GOLD_KR': '원자재',
+        'F_CREDIT_US_IG_OAS': '신용',
+        'F_GROWTH_US_EQ': '경기',
+      };
+
+      final List<Map<String, dynamic>> results = [];
+
+      for (var item in data) {
+        final code = item['factor_code'] as String;
+        if (factorMap.containsKey(code)) {
+          final sensitivity = (item['ann_sensitivity_total'] as num).toDouble();
+          results.add({
+            'factor': factorMap[code],
+            'value': sensitivity, 
+          });
+        }
+      }
+
+      // Sort consistently if needed, or predefined order
+      final order = ['금리', '환율', '경기', '신용', '원자재'];
+      results.sort((a, b) {
+        return order.indexOf(a['factor']).compareTo(order.indexOf(b['factor']));
+      });
+
+      return results;
+    } catch (e) {
+      debugPrint('Error fetching factor sensitivity: $e');
+      return [];
+    }
+  }
+
+  Future<Map<String, List<Map<String, String>>>> getPortfolioDetails() async {
+    try {
+      // 1. Get the latest record_date
+      final dateResponse = await Supabase.instance.client
+          .from('view_portfolio_summary')
+          .select('record_date')
+          .order('record_date', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (dateResponse == null) return {};
+      final latestDate = dateResponse['record_date'];
+
+      // 2. Fetch data for that date
+      final response = await Supabase.instance.client
+          .from('view_portfolio_summary')
+          .select()
+          .eq('record_date', latestDate);
+
+      final data = response as List<dynamic>;
+      
+      final Map<String, List<Map<String, String>>> result = {
+        'stock': [],
+        'bond': [],
+        'alternative': [],
+        'cash': [],
+      };
+
+      final formatter = NumberFormat.currency(locale: 'ko_KR', symbol: '', decimalDigits: 0);
+
+      for (var item in data) {
+        final assetType = item['asset_type'] as String? ?? '기타';
+        String sectionKey;
+        if (assetType.contains('주식')) {
+          sectionKey = 'stock';
+        } else if (assetType.contains('채권')) {
+          sectionKey = 'bond';
+        } else if (assetType.contains('대체')) {
+          sectionKey = 'alternative';
+        } else if (assetType.contains('현금')) {
+          sectionKey = 'cash';
+        } else {
+          sectionKey = 'alternative'; // Default or handle otherwise
+        }
+
+        final code = item['stock_code']?.toString() ?? '';
+        final name = item['stock_name']?.toString() ?? '';
+        final shares = item['total_qty']?.toString() ?? '0';
+        
+        final profitRateVal = (item['earning_rate'] as num?)?.toDouble() ?? 0.0;
+        final profitRate = "${profitRateVal > 0 ? '+' : ''}${profitRateVal.toStringAsFixed(2)}%";
+        
+        final profitAmountVal = (item['earning_amt'] as num?)?.toInt() ?? 0;
+        final profitAmount = "${profitAmountVal > 0 ? '+' : ''}${formatter.format(profitAmountVal)}원";
+
+        final currentPriceVal = (item['cur_price'] as num?)?.toInt() ?? 0;
+        final currentPrice = formatter.format(currentPriceVal);
+
+        final totalValueVal = (item['total_eval_amt'] as num?)?.toInt() ?? 0;
+        final totalValue = formatter.format(totalValueVal);
+
+        // Calculate percentage within the section is not trivial without section total, 
+        // but user prompt says "weight_percent" is available in the view.
+        // Let's assume weight_percent is the portfolio weight.
+        final weightVal = (item['weight_percent'] as num?)?.toDouble() ?? 0.0;
+        final percentage = "${weightVal.toStringAsFixed(2)}%";
+
+        result[sectionKey]?.add({
+          'code': code,
+          'name': name,
+          'shares': "$shares주", 
+          'profitRate': profitRate,
+          'profitAmount': profitAmount,
+          'currentPrice': currentPrice,
+          'totalValue': totalValue,
+          'percentage': percentage,
+        });
+      }
+
+      return result;
+
+    } catch (e) {
+      debugPrint('Error fetching portfolio details: $e');
+      return {};
+    }
+  }
+  Future<List<Map<String, dynamic>>> getFactorSensitivityDetail() async {
+    try {
+      // 1. Get the latest portfolio_date
+      final dateResponse = await Supabase.instance.client
+          .from('view_portfolio_factor_exposure_single_z_summary')
+          .select('portfolio_date')
+          .order('portfolio_date', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (dateResponse == null) return [];
+      final latestDate = dateResponse['portfolio_date'];
+
+      // 2. Fetch data for that date
+      final response = await Supabase.instance.client
+          .from('view_portfolio_factor_exposure_single_z_summary')
+          .select()
+          .eq('portfolio_date', latestDate)
+          .order('ann_sensitivity_total', ascending: false);
+
+      final data = response as List<dynamic>;
+
+      return data.map((item) {
+        final totalFn = (item['ann_sensitivity_total'] as num?)?.toDouble() ?? 0.0;
+        return {
+          'factor_name': item['factor_name'] as String? ?? '',
+          'value': totalFn,
+        };
+      }).toList();
+
+    } catch (e) {
+      debugPrint('Error fetching factor sensitivity detail: $e');
       return [];
     }
   }
