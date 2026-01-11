@@ -1,4 +1,6 @@
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../services/portfolio_service.dart';
 
 class SensitivityTopBottomPage extends StatefulWidget {
@@ -19,12 +21,14 @@ class SensitivityTopBottomPage extends StatefulWidget {
 class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
   late Future<Map<String, List<Map<String, dynamic>>>> _dataFuture;
   late Future<Map<String, String>> _metadataFuture;
+  late Future<List<Map<String, dynamic>>> _chartFuture;
 
   @override
   void initState() {
     super.initState();
     _dataFuture = PortfolioService().getFactorTopBottomList(widget.factorCode);
     _metadataFuture = PortfolioService().getFactorMetadata(widget.factorCode);
+    _chartFuture = PortfolioService().getFactorReturnsHistory(widget.factorCode);
   }
 
   @override
@@ -48,7 +52,7 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
         ),
       ),
       body: FutureBuilder<List<dynamic>>(
-        future: Future.wait([_dataFuture, _metadataFuture]),
+        future: Future.wait([_dataFuture, _metadataFuture, _chartFuture]),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -59,27 +63,28 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
 
           final data = snapshot.data![0] as Map<String, List<Map<String, dynamic>>>;
           final metadata = snapshot.data![1] as Map<String, String>;
+          final chartData = snapshot.data![2] as List<Map<String, dynamic>>;
 
           final topList = data['Top'] ?? [];
           final bottomList = data['Bottom'] ?? [];
 
-          if (topList.isEmpty && bottomList.isEmpty) {
+          if (topList.isEmpty && bottomList.isEmpty && chartData.isEmpty && metadata['description'] == '설명이 없습니다.') {
             return const Center(child: Text("데이터가 없습니다."));
           }
 
           return SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.only(bottom: 20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 // Metadata Card
-                if (metadata['description'] != '설명이 없습니다.' || metadata['source_series']!.isNotEmpty)
+                if (metadata['description'] != '설명이 없습니다.' || chartData.isNotEmpty)
                   Container(
                     margin: const EdgeInsets.only(bottom: 24),
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
+                      // Removed borderRadius
                       boxShadow: [
                         BoxShadow(
                           color: Colors.black.withValues(alpha: 0.05),
@@ -91,29 +96,70 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          metadata['description']!,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            height: 1.5,
-                            color: Color(0xFF374151),
+                        if (metadata['description'] != '설명이 없습니다.')
+                          Text(
+                            metadata['description']!,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              height: 1.5,
+                              color: Color(0xFF374151),
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 12),
-                         Text(
-                          "Source: ${metadata['source_series']}",
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Color(0xFF9CA3AF),
+                        if (metadata['description'] != '설명이 없습니다.' && chartData.isNotEmpty)
+                          const SizedBox(height: 24),
+                        // Returns Chart
+                        if (chartData.isNotEmpty)
+                          SizedBox(
+                            height: 150,
+                            child: LineChart(
+                              LineChartData(
+                                lineTouchData: const LineTouchData(enabled: false),
+                                gridData: FlGridData(
+                                  show: true,
+                                  drawVerticalLine: false,
+                                  horizontalInterval: 1,
+                                  getDrawingHorizontalLine: (value) {
+                                    return FlLine(
+                                      color: Colors.grey.withValues(alpha: 0.1),
+                                      strokeWidth: 1,
+                                    );
+                                  },
+                                ),
+                                titlesData: const FlTitlesData(show: false),
+                                borderData: FlBorderData(show: false),
+                                lineBarsData: [
+                                  LineChartBarData(
+                                    spots: chartData.asMap().entries.map((e) {
+                                      return FlSpot(e.key.toDouble(), e.value['value']);
+                                    }).toList(),
+                                    isCurved: true,
+                                    color: const Color(0xFF5B7CE6),
+                                    barWidth: 2,
+                                    isStrokeCapRound: true,
+                                    dotData: const FlDotData(show: false),
+                                    belowBarData: BarAreaData(
+                                      show: true,
+                                      color: const Color(0xFF5B7CE6).withValues(alpha: 0.1),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
                       ],
                     ),
                   ),
 
-                _buildSection("상위 5", topList),
-                const SizedBox(height: 24),
-                _buildSection("하위 5", bottomList),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Column(
+                    children: [
+                      _buildSection("상위 5", topList),
+                      const SizedBox(height: 24),
+                      _buildSection("하위 5", bottomList),
+                    ],
+                  ),
+                ),
               ],
             ),
           );
@@ -181,11 +227,30 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                code,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF9CA3AF),
+              GestureDetector(
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: code));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("종목코드가 복사되었습니다.")),
+                  );
+                },
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      code,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF9CA3AF),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Icon(
+                      Icons.copy,
+                      size: 12,
+                      color: Color(0xFF9CA3AF),
+                    ),
+                  ],
                 ),
               ),
             ],

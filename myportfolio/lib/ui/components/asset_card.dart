@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class AssetCard extends StatelessWidget {
   final String code;
@@ -43,15 +44,23 @@ class AssetCard extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  Text(
-                    code,
-                    style: TextStyle(fontSize: 12, color: Colors.grey[400]),
-                  ),
-                  const SizedBox(width: 4),
-                  Icon(Icons.copy, size: 12, color: Colors.grey[400]),
-                ],
+              GestureDetector(
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: code));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("종목코드가 복사되었습니다.")),
+                  );
+                },
+                child: Row(
+                  children: [
+                    Text(
+                      code,
+                      style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(Icons.copy, size: 12, color: Colors.grey[400]),
+                  ],
+                ),
               ),
               Text(
                 percentage,

@@ -417,4 +417,36 @@ class PortfolioService {
       };
     }
   }
+  Future<List<Map<String, dynamic>>> getFactorReturnsHistory(String factorCode) async {
+    try {
+      final safeFactorCode = factorCode.trim();
+      final startDate = DateTime.now().subtract(const Duration(days: 180));
+      
+      final response = await Supabase.instance.client
+          .from('factor_returns')
+          .select('record_date, ret')
+          .eq('factor_code', safeFactorCode)
+          .gte('record_date', startDate.toIso8601String())
+          .order('record_date', ascending: true);
+
+      final rawData = response as List<dynamic>;
+      final List<Map<String, dynamic>> result = [];
+      double cumulative = 1.0;
+
+      for (var item in rawData) {
+        final double dailyRet = (item['ret'] as num).toDouble();
+        cumulative *= (1 + dailyRet);
+        
+        result.add({
+          'date': DateTime.parse(item['record_date']),
+          'value': cumulative - 1.0,
+        });
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint('Error fetching factor returns history: $e');
+      return [];
+    }
+  }
 }
