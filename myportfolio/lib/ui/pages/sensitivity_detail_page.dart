@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../services/portfolio_service.dart';
+import 'sensitivity_top_bottom_page.dart';
 
 class SensitivityDetailPage extends StatefulWidget {
   const SensitivityDetailPage({super.key});
@@ -64,51 +65,65 @@ class _SensitivityDetailPageState extends State<SensitivityDetailPage> {
 
   Widget _buildSensitivityCard(Map<String, dynamic> item) {
     final name = item['factor_name'] as String;
+    final code = item['factor_code'] as String;
     final value = item['value'] as double;
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            name,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
-              color: Color(0xFF1F2937),
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => SensitivityTopBottomPage(
+              factorCode: code,
+              factorName: name,
             ),
           ),
-          Row(
-            children: [
-              Text(
-                value.toStringAsFixed(2),
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: value >= 0 ? const Color(0xFFEF4444) : const Color(0xFF3B82F6),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              name,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF1F2937),
+              ),
+            ),
+            Row(
+              children: [
+                Text(
+                  value.toStringAsFixed(2),
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: value >= 0 ? const Color(0xFFEF4444) : const Color(0xFF3B82F6),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              const Icon(
-                Icons.chevron_right,
-                color: Color(0xFF9CA3AF),
-                size: 20,
-              ),
-            ],
-          ),
-        ],
+                const SizedBox(width: 8),
+                const Icon(
+                  Icons.chevron_right,
+                  color: Color(0xFF9CA3AF),
+                  size: 20,
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

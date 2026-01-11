@@ -266,6 +266,7 @@ class PortfolioService {
       return data.map((item) {
         final totalFn = (item['ann_sensitivity_total'] as num?)?.toDouble() ?? 0.0;
         return {
+          'factor_code': item['factor_code'] as String? ?? '',
           'factor_name': item['factor_name'] as String? ?? '',
           'value': totalFn,
         };
@@ -273,6 +274,118 @@ class PortfolioService {
 
     } catch (e) {
       debugPrint('Error fetching factor sensitivity detail: $e');
+      return [];
+    }
+  }
+
+  Future<Map<String, List<Map<String, dynamic>>>> getFactorTopBottomList(String factorCode) async {
+    try {
+      final safeFactorCode = factorCode.trim();
+      // 1. Get latest date
+      final dateResponse = await Supabase.instance.client
+          .from('view_factor_ticker_sensitivity_top_bottom_5')
+          .select('asof_date')
+          .eq('factor_code', safeFactorCode)
+          .order('asof_date', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (dateResponse == null) {
+        debugPrint('TopBottom: No latest date found for $safeFactorCode');
+        return {'Top': [], 'Bottom': []};
+      }
+      final latestDate = dateResponse['asof_date'];
+      debugPrint('TopBottom: Latest date for $safeFactorCode is $latestDate');
+
+      // 2. Fetch data
+      final response = await Supabase.instance.client
+          .from('view_factor_ticker_sensitivity_top_bottom_5')
+          .select()
+          .eq('factor_code', safeFactorCode)
+          .eq('asof_date', latestDate)
+          .order('rank', ascending: true); // rank 1 is top/bottom 1
+
+      final data = response as List<dynamic>;
+      debugPrint('TopBottom: Fetched ${data.length} items');
+
+      final topList = <Map<String, dynamic>>[];
+      final bottomList = <Map<String, dynamic>>[];
+
+      for (var item in data) {
+        debugPrint('TopBottom: Processing item: ${item['stock_name']} bucket=${item['bucket']}');
+        final bucket = (item['bucket'] as String).trim().toLowerCase(); 
+        final mappedItem = {
+          'stock_code': item['stock_code'],
+          'stock_name': item['stock_name'],
+          'ann_sensitivity': (item['ann_sensitivity'] as num?)?.toDouble() ?? 0.0,
+          'r2': (item['r2'] as num?)?.toDouble() ?? 0.0,
+          'rank': item['rank'],
+        };
+
+        if (bucket == 'top') {
+          topList.add(mappedItem);
+        } else if (bucket == 'bottom') {
+          bottomList.add(mappedItem);
+        }
+      }
+
+      return {
+        'Top': topList,
+        'Bottom': bottomList,
+      };
+
+    } catch (e) {
+      debugPrint('Error fetching factor top/bottom list: $e');
+      return {'Top': [], 'Bottom': []};
+    }
+  }
+
+  Future<List<PortfolioItem>> getCurrencyExposure() async {
+    try {
+      final response = await Supabase.instance.client
+          .from('view_currency_exposure_summary')
+          .select()
+          .order('record_timestamp', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (response == null) return [];
+
+      final weightMap = response['weight_percent_map'];
+      if (weightMap == null) return [];
+
+      final Map<String, dynamic> weights = weightMap is Map ? Map<String, dynamic>.from(weightMap) : {};
+      
+      final List<PortfolioItem> items = [];
+      
+      weights.forEach((key, value) {
+        final double val = (value as num).toDouble();
+        if (val > 0) {
+          Color color;
+          switch (key.toUpperCase()) {
+            case 'KRW': color = const Color(0xFF3B82F6); break; // Blue
+            case 'USD': color = const Color(0xFF10B981); break; // Green
+            case 'JPY': color = const Color(0xFF8B5CF6); break; // Purple
+            case 'CNY': color = const Color(0xFFEF4444); break; // Red
+            case 'EUR': color = const Color(0xFFF59E0B); break; // Amber
+            default: color = const Color(0xFF9CA3AF); break; // Gray
+          }
+          
+          items.add(PortfolioItem(
+            name: key,
+            value: val,
+            amount: 0, // Not needed for this chart
+            color: color,
+          ));
+        }
+      });
+
+      // Sort by value desc
+      items.sort((a, b) => b.value.compareTo(a.value));
+
+      return items;
+    } catch (e) {
+      debugPrint('Error fetching currency exposure: $e');
       return [];
     }
   }

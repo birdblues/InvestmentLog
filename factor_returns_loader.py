@@ -64,6 +64,19 @@ DURATION_KR10Y = 8.5
 DURATION_US_HY_OAS = 4.5
 DURATION_US_IG_OAS = 6.0
 
+LAG_POLICY_BY_FACTOR = {
+    "F_SECTOR_US_CONSUMER_DISCRETIONARY": "1",
+    "F_SECTOR_US_INDUSTRIALS": "1",
+    "F_SECTOR_US_MATERIALS": "1",
+    "F_SECTOR_US_ENERGY": "1",
+    "F_SECTOR_US_TECH": "1",
+    "F_SECTOR_US_FINANCIALS": "1",
+    "F_SECTOR_US_COMMUNICATIONS": "1",
+    "F_SECTOR_US_HEALTHCARE": "1",
+    "F_SECTOR_US_CONSUMER_STAPLES": "1",
+    "F_SECTOR_US_UTILITIES": "1",
+}
+
 
 @dataclass(frozen=True)
 class FactorSpec:
@@ -390,7 +403,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
     specs = [
         FactorSpec(
             factor_code="F_GROWTH_US_EQ",
-            factor_name="경기/위험자산(미국 주식, S&P500)",
+            factor_name="미국주식",
             source="FRED",
             source_series="SP500",
             frequency="D",
@@ -398,7 +411,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_GROWTH_EXUS_EQ",
-            factor_name="경기/위험자산(글로벌 주식 ex-US, VXUS)",
+            factor_name="글로벌주식",
             source="YFINANCE",
             source_series="VXUS",
             frequency="D",
@@ -406,8 +419,98 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
             yf_candidates=["VXUS", "VEU"],
         ),
         FactorSpec(
+            factor_code="F_SECTOR_US_CONSUMER_DISCRETIONARY",
+            factor_name="경기소비재",
+            source="YFINANCE",
+            source_series="XLY",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLY"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_INDUSTRIALS",
+            factor_name="산업재",
+            source="YFINANCE",
+            source_series="XLI",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLI"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_MATERIALS",
+            factor_name="소재",
+            source="YFINANCE",
+            source_series="XLB",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLB"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_ENERGY",
+            factor_name="에너지",
+            source="YFINANCE",
+            source_series="XLE",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLE"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_TECH",
+            factor_name="정보기술",
+            source="YFINANCE",
+            source_series="XLK",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLK"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_FINANCIALS",
+            factor_name="금융",
+            source="YFINANCE",
+            source_series="XLF",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLF"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_COMMUNICATIONS",
+            factor_name="통신서비스",
+            source="YFINANCE",
+            source_series="XLC",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLC"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_HEALTHCARE",
+            factor_name="헬스케어",
+            source="YFINANCE",
+            source_series="XLV",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLV"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_CONSUMER_STAPLES",
+            factor_name="필수소비재",
+            source="YFINANCE",
+            source_series="XLP",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLP"],
+        ),
+        FactorSpec(
+            factor_code="F_SECTOR_US_UTILITIES",
+            factor_name="유틸리티",
+            source="YFINANCE",
+            source_series="XLU",
+            frequency="D",
+            ret_type="log_return",
+            yf_candidates=["XLU"],
+        ),
+        FactorSpec(
             factor_code="F_RATE_US10Y",
-            factor_name="금리(미국 10Y 국채수익률)",
+            factor_name="미국국채10년",
             source="FRED",
             source_series="DGS10",
             frequency="D",
@@ -416,7 +519,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_RATE_US10Y_REAL",
-            factor_name="금리(미국 10Y 실질금리)",
+            factor_name="미국실질금리10년",
             source="FRED",
             source_series="DFII10",
             frequency="D",
@@ -425,7 +528,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_CURVE_US_2Y10Y",
-            factor_name="금리커브(미국 2Y-10Y, 10Y-2Y)",
+            factor_name="미국금리커브(2-10년)",
             source="FRED",
             source_series="T10Y2Y",
             frequency="D",
@@ -433,7 +536,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_RATE_KR10Y",
-            factor_name="금리(한국 10Y 국고채수익률)",
+            factor_name="한국국채10년",
             source="ECOS",
             source_series="817Y002/D/010210000",
             frequency="D",
@@ -445,7 +548,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_CURR_USDKRW",
-            factor_name="통화(원/달러, Yahoo Close)",
+            factor_name="통화(원/달러)",
             source="YFINANCE",
             source_series="KRW=X",
             frequency="D",
@@ -462,7 +565,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_CREDIT_US_HY_OAS",
-            factor_name="크레딧(미국 HY OAS)",
+            factor_name="하이일드채권",
             source="FRED",
             source_series="BAMLH0A0HYM2",
             frequency="D",
@@ -471,7 +574,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_CREDIT_US_IG_OAS",
-            factor_name="크레딧(미국 IG OAS)",
+            factor_name="투자등급채권",
             source="FRED",
             source_series="BAMLC0A0CM",
             frequency="D",
@@ -480,7 +583,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_INFL_US_BE10Y",
-            factor_name="물가(미국 10Y 기대인플레, BEI)",
+            factor_name="미국물가",
             source="FRED",
             source_series="T10YIE",
             frequency="D",
@@ -488,7 +591,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_INFL_KR_CPI",
-            factor_name="물가(한국 CPI, 월간)",
+            factor_name="한국CPI",
             source="ECOS",
             source_series="901Y009/M/0",
             frequency="M",
@@ -499,7 +602,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_COMM_OIL_WTI",
-            factor_name="원자재(원유 WTI)",
+            factor_name="원유",
             source="FRED",
             source_series="DCOILWTICO",
             frequency="D",
@@ -507,7 +610,7 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         ),
         FactorSpec(
             factor_code="F_COMM_GOLD_KR",
-            factor_name="원자재(금, KRX 411060)",
+            factor_name="금현물",
             source="PYKRX",
             source_series="411060",
             frequency="D",
@@ -658,7 +761,7 @@ def main():
                     # ✅ 새 컬럼(있다면 같이 저장; 없으면 Supabase가 에러 낼 수 있음)
                     "observed_date": record_date.isoformat(),
                     "effective_kr_date": None,
-                    "lag_policy": None,
+                    "lag_policy": LAG_POLICY_BY_FACTOR.get(spec.factor_code),
                     "source_tz": tz_label,
                 }
                 rows.append(row)
