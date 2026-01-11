@@ -3,11 +3,27 @@
 CREATE OR REPLACE VIEW public.view_factor_returns_zscore AS
 WITH base AS (
   SELECT
-    r.*,
+    r.id,
+    r.factor_code,
+    md.factor_name,
+    md.source,
+    md.source_series,
+    r.record_date,
+    md.frequency,
+    r.level,
+    r.ret,
+    md.ret_type,
+    r.created_at,
+    r.observed_date,
+    r.effective_kr_date,
+    md.lag_policy,
+    md.source_tz,
     avg(r.ret) FILTER (WHERE r.ret <> 0) OVER w AS ret_mean,
     stddev_samp(r.ret) FILTER (WHERE r.ret <> 0) OVER w AS ret_std,
     count(r.ret) FILTER (WHERE r.ret <> 0) OVER w AS ret_n
   FROM public.factor_returns r
+  LEFT JOIN public.factor_metadata md
+    ON md.factor_code = r.factor_code
   WINDOW w AS (
     PARTITION BY r.factor_code
     ORDER BY r.record_date
@@ -15,7 +31,24 @@ WITH base AS (
   )
 )
 SELECT
-  base.*,
+  base.id,
+  base.factor_code,
+  base.factor_name,
+  base.source,
+  base.source_series,
+  base.record_date,
+  base.frequency,
+  base.level,
+  base.ret,
+  base.ret_type,
+  base.created_at,
+  base.observed_date,
+  base.effective_kr_date,
+  base.lag_policy,
+  base.source_tz,
+  base.ret_mean,
+  base.ret_std,
+  base.ret_n,
   CASE
     WHEN base.ret IS NULL THEN NULL
     WHEN base.ret = 0 THEN 0

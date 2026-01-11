@@ -14,7 +14,8 @@ ticker_factor_beta_loader.py (FULL REPLACE)
 - 팩터 테이블: factor_returns
 - 베타 테이블: ticker_factor_beta_long
 - 티커 맵 테이블: ticker_category_map
-- factor_returns는 record_date(date), factor_code(text), ret(numeric), frequency(text='D') 를 사용
+- factor_returns는 record_date(date), factor_code(text), ret(numeric)을 사용
+- frequency/lag_policy는 factor_metadata에서 조회
 - ticker_factor_beta_long은 사용자가 준 컬럼 기준으로 payload 맞춤
 
 [중요 변경점]
@@ -39,6 +40,7 @@ from __future__ import annotations
 import warnings
 import os
 import re
+import time
 import datetime as dt
 from typing import Dict, List, Optional, Tuple
 
@@ -66,6 +68,7 @@ load_dotenv(override=False)
 # -----------------------------
 TICKER_MAP_TABLE = "ticker_category_map"
 BETA_TABLE = "ticker_factor_beta_long"
+FACTOR_META_TABLE = "factor_metadata"
 
 FACTOR_RET_SOURCE = os.getenv("FACTOR_RET_SOURCE", "raw").strip().lower()
 if FACTOR_RET_SOURCE not in ("raw", "zscore"):
@@ -201,7 +204,13 @@ def sb_client() -> Client:
     return create_client(url, key)
 
 
-def sb_select_all(base_query, page_size: int = 1000, max_pages: int = 500) -> List[Dict]:
+def sb_select_all(
+    base_query,
+    page_size: int = 1000,
+    max_pages: int = 500,
+    max_retries: int = 3,
+    retry_sleep_sec: float = 2.0,
+) -> List[Dict]:
     """
     PostgREST range pagination
     """
@@ -209,7 +218,15 @@ def sb_select_all(base_query, page_size: int = 1000, max_pages: int = 500) -> Li
     for page in range(max_pages):
         frm = page * page_size
         to = frm + page_size - 1
-        resp = base_query.range(frm, to).execute()
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = base_query.range(frm, to).execute()
+                break
+            except Exception as e:
+                if attempt >= max_retries:
+                    raise
+                print(f"[WARN] supabase fetch retry {attempt}/{max_retries}: {e}")
+                time.sleep(retry_sleep_sec)
         rows = resp.data or []
         if not rows:
             break
@@ -217,6 +234,27 @@ def sb_select_all(base_query, page_size: int = 1000, max_pages: int = 500) -> Li
         if len(rows) < page_size:
             break
     return all_rows
+
+
+def fetch_factor_metadata(sb: Client, factor_codes: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
+    if not factor_codes:
+        return {}
+    q = (
+        sb.table(FACTOR_META_TABLE)
+        .select("factor_code,frequency,lag_policy")
+        .in_("factor_code", factor_codes)
+    )
+    rows = sb_select_all(q)
+    meta: Dict[str, Dict[str, Optional[str]]] = {}
+    for row in rows:
+        code = row.get("factor_code")
+        if not code:
+            continue
+        meta[code] = {
+            "frequency": row.get("frequency"),
+            "lag_policy": row.get("lag_policy"),
+        }
+    return meta
 
 
 def parse_lag_policy(policy: Optional[str]) -> int:
@@ -436,12 +474,14 @@ def fetch_factor_returns_one(
     factor_code: str,
     end_date: dt.date,
     start_date: Optional[dt.date] = None,
+    frequency: Optional[str] = None,
+    lag_policy: Optional[str] = None,
     page_size: int = 1000,
     max_pages: int = 500,
 ) -> pd.DataFrame:
     q = (
         sb.table(FACTOR_TABLE)
-        .select(f"factor_code,record_date,{FACTOR_RET_COLUMN},frequency,lag_policy")
+        .select(f"factor_code,record_date,{FACTOR_RET_COLUMN}")
         .eq("factor_code", factor_code)
         .lte("record_date", end_date.isoformat())
         .order("record_date", desc=False)
@@ -459,6 +499,8 @@ def fetch_factor_returns_one(
 
     df["record_date"] = pd.to_datetime(df["record_date"], errors="coerce").dt.date
     df["ret"] = pd.to_numeric(df["ret"], errors="coerce")
+    df["frequency"] = frequency
+    df["lag_policy"] = lag_policy
     df = df.dropna(subset=["factor_code", "record_date", "ret"]).copy()
     return df
 
@@ -468,6 +510,7 @@ def expand_monthly_to_daily_ret(
     end_date: dt.date,
     start_date: Optional[dt.date] = None,
     release_lag_months: int = 1,
+    lag_policy: Optional[str] = None,
 ) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["factor_code", "record_date", "ret", "frequency", "lag_policy"])
@@ -500,11 +543,6 @@ def expand_monthly_to_daily_ret(
             ret_series.loc[d] = r
 
     factor_code = df["factor_code"].iloc[0]
-    lag_policy = None
-    if "lag_policy" in df.columns:
-        non_null = df["lag_policy"].dropna()
-        if not non_null.empty:
-            lag_policy = non_null.iloc[0]
     return pd.DataFrame({
         "factor_code": factor_code,
         "record_date": ret_series.index,
@@ -520,11 +558,27 @@ def fetch_factor_returns(
     end_date: dt.date,
     start_date: Optional[dt.date] = None,
 ) -> pd.DataFrame:
+    meta = fetch_factor_metadata(sb, factor_codes)
     frames: List[pd.DataFrame] = []
     for fc in factor_codes:
-        dfi = fetch_factor_returns_one(sb, fc, end_date=end_date, start_date=start_date)
-        if fc == "F_INFL_KR_CPI":
-            dfi = expand_monthly_to_daily_ret(dfi, end_date=end_date, start_date=start_date)
+        meta_fc = meta.get(fc, {})
+        frequency = (meta_fc.get("frequency") or "D").strip().upper()
+        lag_policy = meta_fc.get("lag_policy")
+        dfi = fetch_factor_returns_one(
+            sb,
+            fc,
+            end_date=end_date,
+            start_date=start_date,
+            frequency=frequency,
+            lag_policy=lag_policy,
+        )
+        if frequency == "M":
+            dfi = expand_monthly_to_daily_ret(
+                dfi,
+                end_date=end_date,
+                start_date=start_date,
+                lag_policy=lag_policy,
+            )
         else:
             dfi = dfi[dfi["frequency"] == "D"].copy()
         if not dfi.empty:

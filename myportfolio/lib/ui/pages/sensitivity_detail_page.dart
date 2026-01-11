@@ -30,7 +30,7 @@ class _SensitivityDetailPageState extends State<SensitivityDetailPage> {
         backgroundColor: Colors.white,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black),
+          icon: const Icon(Icons.chevron_left, color: Colors.black, size: 28),
           onPressed: () => Navigator.pop(context),
         ),
       ),

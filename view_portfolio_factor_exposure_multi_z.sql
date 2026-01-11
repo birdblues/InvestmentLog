@@ -76,9 +76,8 @@ factors AS (
 factor_meta AS (
     SELECT
         factor_code,
-        max(factor_name) AS factor_name
-    FROM public.factor_returns
-    GROUP BY factor_code
+        factor_name
+    FROM public.factor_metadata
 ),
 position_factors AS (
     SELECT

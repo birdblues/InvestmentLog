@@ -14,8 +14,7 @@ factor_returns_loader.py (FULL REPLACE)
 - factor_returns 테이블에 아래 컬럼이 있으면 같이 기록합니다.
   observed_date (date)           # 원본 날짜 (record_date와 동일하게 채움)
   effective_kr_date (date)       # 베타 계산 정렬 단계에서 채울 예정(여기선 None)
-  lag_policy (text)              # 정렬 단계에서 채울 예정(여기선 None)
-  source_tz (text)               # "date-only" 등 메타
+- source/series/frequency/ret_type/lag_policy/source_tz는 factor_metadata에 기록합니다.
 
 필수 환경변수(.env):
 - SUPABASE_URL
@@ -396,6 +395,20 @@ def supabase_upsert_rows(sb: Client, rows: List[Dict]) -> None:
         sb.table(FACTOR_TABLE).upsert(chunk, on_conflict="factor_code,record_date").execute()
 
 
+def supabase_upsert_factor_metadata(sb: Client, spec: FactorSpec, source_series: str) -> None:
+    row = {
+        "factor_code": spec.factor_code,
+        "factor_name": spec.factor_name,
+        "source": spec.source,
+        "source_series": source_series,
+        "frequency": spec.frequency,
+        "ret_type": spec.ret_type,
+        "lag_policy": LAG_POLICY_BY_FACTOR.get(spec.factor_code),
+        "source_tz": source_tz_label(spec.source),
+    }
+    sb.table("factor_metadata").upsert(row).execute()
+
+
 # ----------------------------
 # Factor specs (SSOT)
 # ----------------------------
@@ -743,26 +756,22 @@ def main():
                 continue
 
             rows: List[Dict] = []
-            tz_label = source_tz_label(spec.source)
+            try:
+                supabase_upsert_factor_metadata(sb, spec, used_source_series)
+            except Exception as e:
+                print(f"[WARN] {spec.factor_code}: factor_metadata upsert failed: {e}")
 
             for ts, rrow in df.iterrows():
                 record_date = ts.date()  # ✅ 원본 index의 date 그대로
                 row = {
                     "factor_code": spec.factor_code,
-                    "factor_name": spec.factor_name,
-                    "source": spec.source,
-                    "source_series": used_source_series,
                     "record_date": record_date.isoformat(),      # 기존 컬럼(= 원본 날짜로 사용)
-                    "frequency": spec.frequency,
                     "level": float(rrow["level"]) if pd.notna(rrow["level"]) else None,
                     "ret": float(rrow["ret"]) if pd.notna(rrow["ret"]) else None,
-                    "ret_type": spec.ret_type,
 
                     # ✅ 새 컬럼(있다면 같이 저장; 없으면 Supabase가 에러 낼 수 있음)
                     "observed_date": record_date.isoformat(),
                     "effective_kr_date": None,
-                    "lag_policy": LAG_POLICY_BY_FACTOR.get(spec.factor_code),
-                    "source_tz": tz_label,
                 }
                 rows.append(row)
 

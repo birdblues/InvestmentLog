@@ -389,4 +389,32 @@ class PortfolioService {
       return [];
     }
   }
+  Future<Map<String, String>> getFactorMetadata(String factorCode) async {
+    try {
+      final safeFactorCode = factorCode.trim();
+      final response = await Supabase.instance.client
+          .from('factor_metadata')
+          .select('description, source_series')
+          .eq('factor_code', safeFactorCode)
+          .maybeSingle();
+
+      if (response == null) {
+        return {
+          'description': '설명이 없습니다.',
+          'source_series': '',
+        };
+      }
+
+      return {
+        'description': response['description'] as String? ?? '설명이 없습니다.',
+        'source_series': response['source_series'] as String? ?? '',
+      };
+    } catch (e) {
+      debugPrint('Error fetching factor metadata: $e');
+      return {
+        'description': '정보를 불러올 수 없습니다.',
+        'source_series': '',
+      };
+    }
+  }
 }

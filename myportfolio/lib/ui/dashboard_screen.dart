@@ -185,6 +185,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ), 
 
                       PortfolioCard(data: _portfolioItems),
+
+                      const Divider(
+                        thickness: 8,
+                        color: Color(0xFFF9FAFB),
+                      ),
+
+                      // Investment Coach Card
+                      Container(
+                        color: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+                        child: GestureDetector(
+                          onTap: () {
+                            // TODO: Navigate to Investment Coach Page
+                          },
+                          behavior: HitTestBehavior.opaque,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: const [
+                              Text(
+                                "투자 코치",
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black,
+                                ),
+                              ),
+                              Icon(
+                                Icons.chevron_right,
+                                color: Color(0xFF9CA3AF),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),

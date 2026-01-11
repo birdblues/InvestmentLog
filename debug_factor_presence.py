@@ -18,7 +18,7 @@ def main():
     sb = create_client(env_required("SUPABASE_URL"), env_required("SUPABASE_KEY"))
 
     # 1) factor_code 전체 목록/개수
-    r = sb.table("factor_returns").select("factor_code,record_date,ret,frequency").execute()
+    r = sb.table("factor_returns").select("factor_code,record_date,ret").execute()
     df = pd.DataFrame(r.data or [])
     print("rows:", len(df))
     if df.empty:
@@ -38,7 +38,11 @@ def main():
     print(f"\n[{target}] count:", len(dft))
     if not dft.empty:
         print("min_date:", dft["record_date"].min(), "max_date:", dft["record_date"].max())
-        print("freq value_counts:\n", dft["frequency"].value_counts(dropna=False).to_string())
+        meta = sb.table("factor_metadata").select("frequency").eq("factor_code", target).limit(1).execute()
+        freq = None
+        if meta.data:
+            freq = meta.data[0].get("frequency")
+        print("frequency (metadata):", freq)
         print("ret null count:", int(dft["ret"].isna().sum()))
 
         # 3) 혹시 공백/대소문자 꼬임 찾기 (LIKE 대체)
