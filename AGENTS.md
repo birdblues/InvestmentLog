@@ -101,6 +101,16 @@
 - 파이썬 실행/스크립트는 `uv run` 사용을 권장합니다.
 - 의존성 고정은 `uv.lock`을 커밋해 관리합니다.
 
+## LaunchDaemon 스케줄러(1분 주기)
+1) 기존 LaunchAgent 제거
+   - `./setup_schedule.sh uninstall`
+2) LaunchDaemon 설치/시작
+   - `./setup_schedule.sh --daemon install`
+3) 상태 확인
+   - `./setup_schedule.sh --daemon status`
+4) 상세 상태(필요 시)
+   - `sudo launchctl print system/com.birdblues.investmentlog.daemon | rg "runs|state|run interval|last exit"`
+
 ## 코딩 스타일 및 네이밍 규칙
 - PEP 8 기준, 4칸 들여쓰기를 사용합니다.
 - 함수/변수는 `snake_case`, 상수는 `UPPER_SNAKE_CASE`를 사용합니다.

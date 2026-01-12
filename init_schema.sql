@@ -87,6 +87,7 @@ CREATE TABLE public.factor_metadata (
     frequency text,
     ret_type text,
     lag_policy text,
+    lag_policy_stock_code text,
     source_tz text,
     tags text,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,

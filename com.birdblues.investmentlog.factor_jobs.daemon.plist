@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.birdblues.investmentlog.factor_jobs.daemon</string>
+    <key>UserName</key>
+    <string>birdblues</string>
+    <key>GroupName</key>
+    <string>staff</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/birdblues/workspace/InvestmentLog/run_factor_jobs.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/birdblues/workspace/InvestmentLog</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/birdblues</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/birdblues/workspace/InvestmentLog/logs/factor_jobs_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/birdblues/workspace/InvestmentLog/logs/factor_jobs_stderr.log</string>
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

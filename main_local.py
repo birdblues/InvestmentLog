@@ -5,28 +5,35 @@ import time
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 from dotenv import load_dotenv
-import keyring
+from get_token import refresh_tokens, load_auth_data
 
 load_dotenv()
 
 # ============================================================================
-# [환경 변수 로드] GitHub Secrets에서 가져옵니다.
+# [환경 변수 로드]
 # ============================================================================
 try:
     SUPABASE_URL = os.environ["SUPABASE_URL"]
     SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-    ACCOUNTS_JSON = os.environ["ACCOUNTS_JSON"]
-    ACCOUNTS = json.loads(ACCOUNTS_JSON)
 except KeyError as e:
     print(f"❌ [Error] 환경변수 누락: {e}")
     exit(1)
-except json.JSONDecodeError:
-    print("❌ [Error] ACCOUNTS_JSON 형식이 올바르지 않습니다.")
-    exit(1)
 
 BASE_URL = "https://openapi.koreainvestment.com:9443"
+RUN_WINDOW_START = (8, 30)
+RUN_WINDOW_END = (18, 0)
 
 # ============================================================================
+
+def _is_within_run_window_kst(now_kst: datetime) -> bool:
+    if now_kst.weekday() >= 5:
+        return False
+    start_min = RUN_WINDOW_START[0] * 60 + RUN_WINDOW_START[1]
+    end_min = RUN_WINDOW_END[0] * 60 + RUN_WINDOW_END[1]
+    now_min = now_kst.hour * 60 + now_kst.minute
+    if start_min <= end_min:
+        return start_min <= now_min <= end_min
+    return now_min >= start_min or now_min <= end_min
 
 def _is_rate_limit_error(data: dict) -> bool:
     msg = str(data.get("msg1", ""))
@@ -59,8 +66,6 @@ def _request_json_with_retry(url, headers, params, max_retries=5, base_sleep=0.7
         return data
 
     return None
-
-
 
 # ============================================================================
 # [핵심] 계좌별 API 조회 로직 분리
@@ -319,7 +324,14 @@ def process_account(account_info, token, app_key, app_secret, supabase):
         print(f"   ✅ 저장 완료 (보유종목 없음)")
 
 def main():
-    print("=== 🚀 GitHub Actions 자산 백업 시작 ===")
+    KST = timezone(timedelta(hours=9))
+    now_kst = datetime.now(KST)
+    if not _is_within_run_window_kst(now_kst):
+        print("⏸️ 실행 시간대가 아닙니다. 작업을 건너뜁니다.")
+        return
+
+    start_time = now_kst.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{start_time}] === 🚀 GitHub Actions 자산 백업 시작 (Local with kis_auth.json) ===")
     
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -327,28 +339,27 @@ def main():
         print(f"❌ Supabase 접속 실패: {e}")
         return
 
-    for idx, account in enumerate(ACCOUNTS):
+    # 1. 토큰 갱신 (만료시 재발급)
+    refresh_tokens()
+    
+    # 2. 계좌 정보 로드
+    accounts = load_auth_data()
+    if not accounts:
+        print("❌ 인증 파일(kis_auth.json)을 로드할 수 없습니다.")
+        return
+
+    for account in accounts:
+        # kis_auth.json에서 필요한 정보 추출
+        app_key = account.get('app_key')
+        app_secret = account.get('app_secret')
+        token = account.get('token')
         
-        # Keyring에서 토큰 가져오기 (access_token_0, access_token_1, ...)
-        # Service: access_token_{idx}, Username: birdblues
-        service_name = f"access_token_{idx}"
-        token = keyring.get_password(service_name, "birdblues")
+        # account 객체 자체를 process_account에 넘김 (name, acc_no 포함됨)
+        # process_account는 (account_info, token, app_key, app_secret, supabase) 시그니처 가짐
         
         if not token:
-            print(f"❌ [Error] Keyring에서 토큰을 찾을 수 없습니다: {service_name}")
-            continue 
-
-        # Keyring에서 API Key/Secret 가져오기
-        # .env의 ACCOUNTS_JSON에 정의된 값을 Service Name으로 사용
-        key_service = account['app_key']
-        secret_service = account['app_secret']
-
-        app_key = keyring.get_password(key_service, "birdblues")
-        app_secret = keyring.get_password(secret_service, "birdblues")
-
-        if not app_key or not app_secret:
-             print(f"❌ [Error] Keyring에서 App Key/Secret을 찾을 수 없습니다: {key_service} / {secret_service}")
-             continue
+            print(f"❌ [{account.get('name')}] 토큰이 없습니다.")
+            continue
 
         try:
             process_account(account, token, app_key, app_secret, supabase)
