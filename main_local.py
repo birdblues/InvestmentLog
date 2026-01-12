@@ -28,6 +28,38 @@ BASE_URL = "https://openapi.koreainvestment.com:9443"
 
 # ============================================================================
 
+def _is_rate_limit_error(data: dict) -> bool:
+    msg = str(data.get("msg1", ""))
+    code = str(data.get("msg_cd", ""))
+    if code in {"EGW00123", "EGW00133"}:
+        return True
+    return ("초당" in msg) and ("거래" in msg)
+
+def _request_json_with_retry(url, headers, params, max_retries=5, base_sleep=0.7, max_sleep=5.0):
+    for attempt in range(max_retries):
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=30)
+            data = res.json()
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(min(max_sleep, base_sleep * (2 ** attempt)))
+                continue
+            print(f"\n   ❌ API 요청 실패: {e}")
+            return None
+
+        if data.get("rt_cd") == "0":
+            return data
+
+        if _is_rate_limit_error(data) and attempt < max_retries - 1:
+            sleep_sec = min(max_sleep, base_sleep * (2 ** attempt))
+            print(f"\n   [WARN] Rate limit detected. Sleep {sleep_sec:.1f}s and retry...")
+            time.sleep(sleep_sec)
+            continue
+
+        return data
+
+    return None
+
 
 
 # ============================================================================
@@ -69,12 +101,9 @@ def fetch_balance_stock(token, app_key, app_secret, acc_no):
             "CTX_AREA_FK100": ctx_area_fk100,
             "CTX_AREA_NK100": ctx_area_nk100
         }
-        try:
-            res = requests.get(url, headers=headers, params=params, timeout=30)
-            data = res.json()
-        except Exception as e:
-             print(f"\n   ❌ API 요청 실패: {e}")
-             return None
+        data = _request_json_with_retry(url, headers, params)
+        if data is None:
+            return None
         
         if data['rt_cd'] != '0':
             print(f"\n   ❌ 일반계좌 조회 실패: {data.get('msg1')}")
@@ -113,7 +142,7 @@ def fetch_balance_stock(token, app_key, app_secret, acc_no):
             break
             
         if page_count < MAX_PAGES:
-            time.sleep(0.1)
+            time.sleep(0.3)
             continue
         else:
             break
@@ -158,12 +187,9 @@ def fetch_balance_irp(token, app_key, app_secret, acc_no):
             "CTX_AREA_FK100": ctx_area_fk100,
             "CTX_AREA_NK100": ctx_area_nk100
         }
-        try:
-            res = requests.get(url, headers=headers, params=params, timeout=30)
-            data = res.json()
-        except Exception as e:
-             print(f"\n   ❌ API 요청 실패: {e}")
-             return None
+        data = _request_json_with_retry(url, headers, params)
+        if data is None:
+            return None
         
         if data['rt_cd'] != '0':
             print(f"\n   ❌ IRP계좌 조회 실패: {data.get('msg1')}")
@@ -201,7 +227,7 @@ def fetch_balance_irp(token, app_key, app_secret, acc_no):
             break
             
         if page_count < MAX_PAGES:
-            time.sleep(0.1)
+            time.sleep(0.3)
             continue
         else:
             break
@@ -329,7 +355,7 @@ def main():
         except Exception as e:
             print(f"❌ 에러 발생: {e}")
         
-        time.sleep(1)
+        time.sleep(2)
 
     print("\n=== ✨ 작업 완료 ===")
 
