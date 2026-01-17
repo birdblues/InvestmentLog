@@ -100,6 +100,10 @@
 - 테스트 러너는 아직 구성되어 있지 않습니다.
 - 파이썬 실행/스크립트는 `uv run` 사용을 권장합니다.
 - 의존성 고정은 `uv.lock`을 커밋해 관리합니다.
+- 팩터 수익률 전체 재적재(특정 팩터):  
+  `uv run python factor_returns_loader.py --factor-codes F_CURR_USDKRW --full-refresh`
+- 팩터 수익률 전체 재적재(여러 팩터):  
+  `uv run python factor_returns_loader.py --factor-codes F_CURR_USDKRW,F_RATE_US10Y --full-refresh`
 
 ## LaunchDaemon 스케줄러(1분 주기)
 1) 기존 LaunchAgent 제거

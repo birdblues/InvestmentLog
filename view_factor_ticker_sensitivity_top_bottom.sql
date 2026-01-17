@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW public.view_factor_ticker_r2_top_bottom_5 AS
+CREATE OR REPLACE VIEW public.view_factor_ticker_sensitivity_top_bottom AS
 WITH latest_factor AS (
     SELECT
         v.factor_code,
@@ -40,11 +40,11 @@ ranked AS (
         base.*,
         row_number() OVER (
             PARTITION BY base.factor_code
-            ORDER BY base.r2 DESC NULLS LAST
+            ORDER BY base.ann_sensitivity DESC
         ) AS rn_top,
         row_number() OVER (
             PARTITION BY base.factor_code
-            ORDER BY base.r2 ASC NULLS LAST
+            ORDER BY base.ann_sensitivity
         ) AS rn_bottom
     FROM base
 )
@@ -66,18 +66,18 @@ SELECT
     price_interval,
     lookback_window,
     CASE
-        WHEN rn_top <= 5 THEN 'top'
-        WHEN rn_bottom <= 5 THEN 'bottom'
+        WHEN rn_top <= 10 THEN 'top'
+        WHEN rn_bottom <= 10 THEN 'bottom'
         ELSE NULL
     END AS bucket,
     CASE
-        WHEN rn_top <= 5 THEN rn_top
-        WHEN rn_bottom <= 5 THEN rn_bottom
+        WHEN rn_top <= 10 THEN rn_top
+        WHEN rn_bottom <= 10 THEN rn_bottom
         ELSE NULL
     END AS rank
 FROM ranked
-WHERE rn_top <= 5 OR rn_bottom <= 5
+WHERE rn_top <= 10 OR rn_bottom <= 10
 ORDER BY
     factor_code,
-    CASE WHEN rn_top <= 5 THEN 1 ELSE 2 END,
-    CASE WHEN rn_top <= 5 THEN rn_top ELSE rn_bottom END;
+    CASE WHEN rn_top <= 10 THEN 1 ELSE 2 END,
+    CASE WHEN rn_top <= 10 THEN rn_top ELSE rn_bottom END;

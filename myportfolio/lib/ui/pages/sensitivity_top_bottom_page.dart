@@ -18,17 +18,22 @@ class SensitivityTopBottomPage extends StatefulWidget {
       _SensitivityTopBottomPageState();
 }
 
+enum ViewType { sensitivity, r2 }
+
 class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
-  late Future<Map<String, List<Map<String, dynamic>>>> _dataFuture;
-  late Future<Map<String, String>> _metadataFuture;
-  late Future<List<Map<String, dynamic>>> _chartFuture;
+  ViewType _topViewType = ViewType.sensitivity;
+  ViewType _bottomViewType = ViewType.sensitivity;
+
+  late Future<List<dynamic>> _combinedFuture;
 
   @override
   void initState() {
     super.initState();
-    _dataFuture = PortfolioService().getFactorTopBottomList(widget.factorCode);
-    _metadataFuture = PortfolioService().getFactorMetadata(widget.factorCode);
-    _chartFuture = PortfolioService().getFactorReturnsHistory(widget.factorCode);
+    _combinedFuture = Future.wait([
+      PortfolioService().getFactorTopBottomList(widget.factorCode),
+      PortfolioService().getFactorMetadata(widget.factorCode),
+      PortfolioService().getFactorReturnsHistory(widget.factorCode),
+    ]);
   }
 
   @override
@@ -52,7 +57,7 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
         ),
       ),
       body: FutureBuilder<List<dynamic>>(
-        future: Future.wait([_dataFuture, _metadataFuture, _chartFuture]),
+        future: _combinedFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -61,14 +66,26 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
             return const Center(child: Text("데이터를 불러오는데 실패했습니다."));
           }
 
-          final data = snapshot.data![0] as Map<String, List<Map<String, dynamic>>>;
+          final data =
+              snapshot.data![0] as Map<String, List<Map<String, dynamic>>>;
           final metadata = snapshot.data![1] as Map<String, String>;
           final chartData = snapshot.data![2] as List<Map<String, dynamic>>;
 
-          final topList = data['Top'] ?? [];
-          final bottomList = data['Bottom'] ?? [];
+          final rawTopList = data['Top'] ?? [];
+          final rawBottomList = data['Bottom'] ?? [];
 
-          if (topList.isEmpty && bottomList.isEmpty && chartData.isEmpty && metadata['description'] == '설명이 없습니다.') {
+          // Sort and limit logic
+          final topList = _processList(rawTopList, _topViewType, isTop: true);
+          final bottomList = _processList(
+            rawBottomList,
+            _bottomViewType,
+            isTop: false,
+          );
+
+          if (rawTopList.isEmpty &&
+              rawBottomList.isEmpty &&
+              chartData.isEmpty &&
+              metadata['description'] == '설명이 없습니다.') {
             return const Center(child: Text("데이터가 없습니다."));
           }
 
@@ -78,7 +95,8 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 // Metadata Card
-                if (metadata['description'] != '설명이 없습니다.' || chartData.isNotEmpty)
+                if (metadata['description'] != '설명이 없습니다.' ||
+                    chartData.isNotEmpty)
                   Container(
                     margin: const EdgeInsets.only(bottom: 24),
                     padding: const EdgeInsets.all(20),
@@ -105,7 +123,8 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
                               color: Color(0xFF374151),
                             ),
                           ),
-                        if (metadata['description'] != '설명이 없습니다.' && chartData.isNotEmpty)
+                        if (metadata['description'] != '설명이 없습니다.' &&
+                            chartData.isNotEmpty)
                           const SizedBox(height: 24),
                         // Returns Chart
                         if (chartData.isNotEmpty)
@@ -113,7 +132,9 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
                             height: 150,
                             child: LineChart(
                               LineChartData(
-                                lineTouchData: const LineTouchData(enabled: false),
+                                lineTouchData: const LineTouchData(
+                                  enabled: false,
+                                ),
                                 gridData: FlGridData(
                                   show: true,
                                   drawVerticalLine: false,
@@ -130,7 +151,10 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
                                 lineBarsData: [
                                   LineChartBarData(
                                     spots: chartData.asMap().entries.map((e) {
-                                      return FlSpot(e.key.toDouble(), e.value['value']);
+                                      return FlSpot(
+                                        e.key.toDouble(),
+                                        e.value['value'],
+                                      );
                                     }).toList(),
                                     isCurved: true,
                                     color: const Color(0xFF5B7CE6),
@@ -139,7 +163,9 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
                                     dotData: const FlDotData(show: false),
                                     belowBarData: BarAreaData(
                                       show: true,
-                                      color: const Color(0xFF5B7CE6).withValues(alpha: 0.1),
+                                      color: const Color(
+                                        0xFF5B7CE6,
+                                      ).withValues(alpha: 0.1),
                                     ),
                                   ),
                                 ],
@@ -154,9 +180,19 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Column(
                     children: [
-                      _buildSection("상위 5", topList),
+                      _buildSection(
+                        "상위 5",
+                        topList,
+                        _topViewType,
+                        (type) => setState(() => _topViewType = type),
+                      ),
                       const SizedBox(height: 24),
-                      _buildSection("하위 5", bottomList),
+                      _buildSection(
+                        "하위 5",
+                        bottomList,
+                        _bottomViewType,
+                        (type) => setState(() => _bottomViewType = type),
+                      ),
                     ],
                   ),
                 ),
@@ -168,17 +204,131 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
     );
   }
 
-  Widget _buildSection(String title, List<Map<String, dynamic>> items) {
+  List<Map<String, dynamic>> _processList(
+    List<Map<String, dynamic>> originalList,
+    ViewType viewType, {
+    required bool isTop,
+  }) {
+    if (originalList.isEmpty) return [];
+
+    // Copy list to avoid mutating original
+    List<Map<String, dynamic>> sortedList = List.from(originalList);
+
+    if (viewType == ViewType.sensitivity) {
+      // Sort by Sensitivity
+      // Top: High to Low (Usually already sorted this way by DB for Top bucket)
+      // Bottom: Low to High (ascending) so negative values are at the "top" of display
+      // BUT user said "Top/Bottom 10" from DB. Usually bottom bucket has largest negative values.
+      // Let's stick to simple ABS sensitivity for sorting if logic is ambiguous,
+      // but usually for "Top" list we want highest positive sensitivity, "Bottom" list highest negative.
+
+      sortedList.sort((a, b) {
+        final valA = (a['ann_sensitivity'] as num).toDouble();
+        final valB = (b['ann_sensitivity'] as num).toDouble();
+
+        if (isTop) {
+          // Descending for Top
+          return valB.compareTo(valA);
+        } else {
+          // Ascending for Bottom (most negative first)
+          return valA.compareTo(valB);
+        }
+      });
+    } else {
+      // Sort by R2
+      // Higher R2 is better fit. So usually Descending R2 for both Top and Bottom lists.
+      // Because we want to see the items with BEST fit within that group.
+      sortedList.sort((a, b) {
+        final r2A = (a['r2'] as num).toDouble();
+        final r2B = (b['r2'] as num).toDouble();
+        return r2B.compareTo(r2A); // Descending
+      });
+    }
+
+    // Take top 5
+    return sortedList.take(5).toList();
+  }
+
+  Widget _buildToggleButton(
+    String label,
+    ViewType type,
+    ViewType currentType,
+    Function(ViewType) onSelect,
+  ) {
+    final isSelected = currentType == type;
+    return GestureDetector(
+      onTap: () => onSelect(type),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF64748B) : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.1),
+                    blurRadius: 2,
+                    offset: const Offset(0, 1),
+                  ),
+                ]
+              : null,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            color: isSelected ? Colors.white : const Color(0xFF9CA3AF),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSection(
+    String title,
+    List<Map<String, dynamic>> items,
+    ViewType currentViewType,
+    Function(ViewType) onToggle,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF1F2937),
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF1F2937),
+              ),
+            ),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(20),
+              ),
+              padding: const EdgeInsets.all(4),
+              child: Row(
+                children: [
+                  _buildToggleButton(
+                    "S",
+                    ViewType.sensitivity,
+                    currentViewType,
+                    onToggle,
+                  ),
+                  _buildToggleButton(
+                    "R",
+                    ViewType.r2,
+                    currentViewType,
+                    onToggle,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 12),
         if (items.isEmpty)
@@ -194,6 +344,7 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
     final code = item['stock_code'] as String;
     final sensitivity = item['ann_sensitivity'] as double;
     final r2 = item['r2'] as double;
+    final rank = item['rank'] as int?;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -216,14 +367,40 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(
-                child: Text(
-                  name,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF1F2937),
-                  ),
-                  overflow: TextOverflow.ellipsis,
+                child: Row(
+                  children: [
+                    if (rank != null) ...[
+                      Container(
+                        width: 24,
+                        height: 24,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEFF6FF), // Light blue bg
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          rank.toString(),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF3B82F6),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    Expanded(
+                      child: Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1F2937),
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: 8),
@@ -245,11 +422,7 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
                       ),
                     ),
                     const SizedBox(width: 4),
-                    const Icon(
-                      Icons.copy,
-                      size: 12,
-                      color: Color(0xFF9CA3AF),
-                    ),
+                    const Icon(Icons.copy, size: 12, color: Color(0xFF9CA3AF)),
                   ],
                 ),
               ),
@@ -272,10 +445,7 @@ class _SensitivityTopBottomPageState extends State<SensitivityTopBottomPage> {
               ),
               Text(
                 "R²: ${r2.toStringAsFixed(2)}",
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF6B7280),
-                ),
+                style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
               ),
             ],
           ),

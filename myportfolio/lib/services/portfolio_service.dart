@@ -86,7 +86,7 @@ class PortfolioService {
           .from('view_daily_net_worth')
           .select()
           .order('record_date', ascending: true);
-      
+
       final data = response as List<dynamic>;
       return data.map((e) => ValuationItem.fromJson(e)).toList();
     } catch (e) {
@@ -94,6 +94,7 @@ class PortfolioService {
       return [];
     }
   }
+
   Future<List<Map<String, dynamic>>> getFactorSensitivity() async {
     try {
       // 1. Get the latest portfolio_date
@@ -135,10 +136,7 @@ class PortfolioService {
         final code = item['factor_code'] as String;
         if (factorMap.containsKey(code)) {
           final sensitivity = (item['ann_sensitivity_total'] as num).toDouble();
-          results.add({
-            'factor': factorMap[code],
-            'value': sensitivity, 
-          });
+          results.add({'factor': factorMap[code], 'value': sensitivity});
         }
       }
 
@@ -175,7 +173,7 @@ class PortfolioService {
           .eq('record_date', latestDate);
 
       final data = response as List<dynamic>;
-      
+
       final Map<String, List<Map<String, String>>> result = {
         'stock': [],
         'bond': [],
@@ -183,7 +181,11 @@ class PortfolioService {
         'cash': [],
       };
 
-      final formatter = NumberFormat.currency(locale: 'ko_KR', symbol: '', decimalDigits: 0);
+      final formatter = NumberFormat.currency(
+        locale: 'ko_KR',
+        symbol: '',
+        decimalDigits: 0,
+      );
 
       for (var item in data) {
         final assetType = item['asset_type'] as String? ?? '기타';
@@ -203,12 +205,14 @@ class PortfolioService {
         final code = item['stock_code']?.toString() ?? '';
         final name = item['stock_name']?.toString() ?? '';
         final shares = item['total_qty']?.toString() ?? '0';
-        
+
         final profitRateVal = (item['earning_rate'] as num?)?.toDouble() ?? 0.0;
-        final profitRate = "${profitRateVal > 0 ? '+' : ''}${profitRateVal.toStringAsFixed(2)}%";
-        
+        final profitRate =
+            "${profitRateVal > 0 ? '+' : ''}${profitRateVal.toStringAsFixed(2)}%";
+
         final profitAmountVal = (item['earning_amt'] as num?)?.toInt() ?? 0;
-        final profitAmount = "${profitAmountVal > 0 ? '+' : ''}${formatter.format(profitAmountVal)}원";
+        final profitAmount =
+            "${profitAmountVal > 0 ? '+' : ''}${formatter.format(profitAmountVal)}원";
 
         final currentPriceVal = (item['cur_price'] as num?)?.toInt() ?? 0;
         final currentPrice = formatter.format(currentPriceVal);
@@ -216,7 +220,7 @@ class PortfolioService {
         final totalValueVal = (item['total_eval_amt'] as num?)?.toInt() ?? 0;
         final totalValue = formatter.format(totalValueVal);
 
-        // Calculate percentage within the section is not trivial without section total, 
+        // Calculate percentage within the section is not trivial without section total,
         // but user prompt says "weight_percent" is available in the view.
         // Let's assume weight_percent is the portfolio weight.
         final weightVal = (item['weight_percent'] as num?)?.toDouble() ?? 0.0;
@@ -225,7 +229,7 @@ class PortfolioService {
         result[sectionKey]?.add({
           'code': code,
           'name': name,
-          'shares': "$shares주", 
+          'shares': "$shares주",
           'profitRate': profitRate,
           'profitAmount': profitAmount,
           'currentPrice': currentPrice,
@@ -235,12 +239,12 @@ class PortfolioService {
       }
 
       return result;
-
     } catch (e) {
       debugPrint('Error fetching portfolio details: $e');
       return {};
     }
   }
+
   Future<List<Map<String, dynamic>>> getFactorSensitivityDetail() async {
     try {
       // 1. Get the latest portfolio_date
@@ -264,26 +268,28 @@ class PortfolioService {
       final data = response as List<dynamic>;
 
       return data.map((item) {
-        final totalFn = (item['ann_sensitivity_total'] as num?)?.toDouble() ?? 0.0;
+        final totalFn =
+            (item['ann_sensitivity_total'] as num?)?.toDouble() ?? 0.0;
         return {
           'factor_code': item['factor_code'] as String? ?? '',
           'factor_name': item['factor_name'] as String? ?? '',
           'value': totalFn,
         };
       }).toList();
-
     } catch (e) {
       debugPrint('Error fetching factor sensitivity detail: $e');
       return [];
     }
   }
 
-  Future<Map<String, List<Map<String, dynamic>>>> getFactorTopBottomList(String factorCode) async {
+  Future<Map<String, List<Map<String, dynamic>>>> getFactorTopBottomList(
+    String factorCode,
+  ) async {
     try {
       final safeFactorCode = factorCode.trim();
       // 1. Get latest date
       final dateResponse = await Supabase.instance.client
-          .from('view_factor_ticker_sensitivity_top_bottom_5')
+          .from('view_factor_ticker_sensitivity_top_bottom')
           .select('asof_date')
           .eq('factor_code', safeFactorCode)
           .order('asof_date', ascending: false)
@@ -297,13 +303,16 @@ class PortfolioService {
       final latestDate = dateResponse['asof_date'];
       debugPrint('TopBottom: Latest date for $safeFactorCode is $latestDate');
 
-      // 2. Fetch data
+      // 2. Fetch data (Top/Bottom 10 expected)
       final response = await Supabase.instance.client
-          .from('view_factor_ticker_sensitivity_top_bottom_5')
+          .from('view_factor_ticker_sensitivity_top_bottom')
           .select()
           .eq('factor_code', safeFactorCode)
           .eq('asof_date', latestDate)
-          .order('rank', ascending: true); // rank 1 is top/bottom 1
+          .order(
+            'ann_sensitivity',
+            ascending: false,
+          ); // Order by sensitivity initially
 
       final data = response as List<dynamic>;
       debugPrint('TopBottom: Fetched ${data.length} items');
@@ -312,12 +321,13 @@ class PortfolioService {
       final bottomList = <Map<String, dynamic>>[];
 
       for (var item in data) {
-        debugPrint('TopBottom: Processing item: ${item['stock_name']} bucket=${item['bucket']}');
-        final bucket = (item['bucket'] as String).trim().toLowerCase(); 
+        // debugPrint('TopBottom: Processing item: ${item['stock_name']} bucket=${item['bucket']}');
+        final bucket = (item['bucket'] as String).trim().toLowerCase();
         final mappedItem = {
           'stock_code': item['stock_code'],
           'stock_name': item['stock_name'],
-          'ann_sensitivity': (item['ann_sensitivity'] as num?)?.toDouble() ?? 0.0,
+          'ann_sensitivity':
+              (item['ann_sensitivity'] as num?)?.toDouble() ?? 0.0,
           'r2': (item['r2'] as num?)?.toDouble() ?? 0.0,
           'rank': item['rank'],
         };
@@ -329,11 +339,7 @@ class PortfolioService {
         }
       }
 
-      return {
-        'Top': topList,
-        'Bottom': bottomList,
-      };
-
+      return {'Top': topList, 'Bottom': bottomList};
     } catch (e) {
       debugPrint('Error fetching factor top/bottom list: $e');
       return {'Top': [], 'Bottom': []};
@@ -354,29 +360,45 @@ class PortfolioService {
       final weightMap = response['weight_percent_map'];
       if (weightMap == null) return [];
 
-      final Map<String, dynamic> weights = weightMap is Map ? Map<String, dynamic>.from(weightMap) : {};
-      
+      final Map<String, dynamic> weights = weightMap is Map
+          ? Map<String, dynamic>.from(weightMap)
+          : {};
+
       final List<PortfolioItem> items = [];
-      
+
       weights.forEach((key, value) {
         final double val = (value as num).toDouble();
         if (val > 0) {
           Color color;
           switch (key.toUpperCase()) {
-            case 'KRW': color = const Color(0xFF3B82F6); break; // Blue
-            case 'USD': color = const Color(0xFF10B981); break; // Green
-            case 'JPY': color = const Color(0xFF8B5CF6); break; // Purple
-            case 'CNY': color = const Color(0xFFEF4444); break; // Red
-            case 'EUR': color = const Color(0xFFF59E0B); break; // Amber
-            default: color = const Color(0xFF9CA3AF); break; // Gray
+            case 'KRW':
+              color = const Color(0xFF3B82F6);
+              break; // Blue
+            case 'USD':
+              color = const Color(0xFF10B981);
+              break; // Green
+            case 'JPY':
+              color = const Color(0xFF8B5CF6);
+              break; // Purple
+            case 'CNY':
+              color = const Color(0xFFEF4444);
+              break; // Red
+            case 'EUR':
+              color = const Color(0xFFF59E0B);
+              break; // Amber
+            default:
+              color = const Color(0xFF9CA3AF);
+              break; // Gray
           }
-          
-          items.add(PortfolioItem(
-            name: key,
-            value: val,
-            amount: 0, // Not needed for this chart
-            color: color,
-          ));
+
+          items.add(
+            PortfolioItem(
+              name: key,
+              value: val,
+              amount: 0, // Not needed for this chart
+              color: color,
+            ),
+          );
         }
       });
 
@@ -389,6 +411,7 @@ class PortfolioService {
       return [];
     }
   }
+
   Future<Map<String, String>> getFactorMetadata(String factorCode) async {
     try {
       final safeFactorCode = factorCode.trim();
@@ -399,10 +422,7 @@ class PortfolioService {
           .maybeSingle();
 
       if (response == null) {
-        return {
-          'description': '설명이 없습니다.',
-          'source_series': '',
-        };
+        return {'description': '설명이 없습니다.', 'source_series': ''};
       }
 
       return {
@@ -411,17 +431,17 @@ class PortfolioService {
       };
     } catch (e) {
       debugPrint('Error fetching factor metadata: $e');
-      return {
-        'description': '정보를 불러올 수 없습니다.',
-        'source_series': '',
-      };
+      return {'description': '정보를 불러올 수 없습니다.', 'source_series': ''};
     }
   }
-  Future<List<Map<String, dynamic>>> getFactorReturnsHistory(String factorCode) async {
+
+  Future<List<Map<String, dynamic>>> getFactorReturnsHistory(
+    String factorCode,
+  ) async {
     try {
       final safeFactorCode = factorCode.trim();
       final startDate = DateTime.now().subtract(const Duration(days: 180));
-      
+
       final response = await Supabase.instance.client
           .from('factor_returns')
           .select('record_date, ret')
@@ -436,7 +456,7 @@ class PortfolioService {
       for (var item in rawData) {
         final double dailyRet = (item['ret'] as num).toDouble();
         cumulative *= (1 + dailyRet);
-        
+
         result.add({
           'date': DateTime.parse(item['record_date']),
           'value': cumulative - 1.0,

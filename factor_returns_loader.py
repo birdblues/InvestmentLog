@@ -32,6 +32,7 @@ import os
 import math
 import time
 import datetime as dt
+import argparse
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -62,6 +63,7 @@ DURATION_US10Y = 8.5
 DURATION_KR10Y = 8.5
 DURATION_US_HY_OAS = 4.5
 DURATION_US_IG_OAS = 6.0
+BACKFILL_DAYS_DAILY = 3
 
 LAG_POLICY_BY_FACTOR = {
     "F_SECTOR_US_CONSUMER_DISCRETIONARY": "1",
@@ -374,6 +376,43 @@ def compute_returns(level: pd.Series, ret_type: str, duration_years: Optional[fl
 # ----------------------------
 # Supabase helpers
 # ----------------------------
+def _meta_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s if s else None
+
+
+def fetch_factor_metadata_map(sb: Client, factor_codes: List[str]) -> Dict[str, Dict[str, Optional[str]]]:
+    if not factor_codes:
+        return {}
+    resp = (
+        sb.table("factor_metadata")
+        .select("factor_code,factor_name,source,source_series,frequency,ret_type,lag_policy,source_tz")
+        .in_("factor_code", factor_codes)
+        .execute()
+    )
+    rows = resp.data or []
+    meta: Dict[str, Dict[str, Optional[str]]] = {}
+    for row in rows:
+        code = _meta_value(row.get("factor_code"))
+        if not code:
+            continue
+        frequency = _meta_value(row.get("frequency"))
+        if frequency:
+            frequency = frequency.upper()
+        meta[code] = {
+            "factor_name": _meta_value(row.get("factor_name")),
+            "source": _meta_value(row.get("source")),
+            "source_series": _meta_value(row.get("source_series")),
+            "frequency": frequency,
+            "ret_type": _meta_value(row.get("ret_type")),
+            "lag_policy": _meta_value(row.get("lag_policy")),
+            "source_tz": _meta_value(row.get("source_tz")),
+        }
+    return meta
+
+
 def supabase_get_last_date(sb: Client, factor_code: str) -> Optional[dt.date]:
     resp = (
         sb.table(FACTOR_TABLE)
@@ -395,18 +434,43 @@ def supabase_upsert_rows(sb: Client, rows: List[Dict]) -> None:
         sb.table(FACTOR_TABLE).upsert(chunk, on_conflict="factor_code,record_date").execute()
 
 
-def supabase_upsert_factor_metadata(sb: Client, spec: FactorSpec, source_series: str) -> None:
-    row = {
-        "factor_code": spec.factor_code,
-        "factor_name": spec.factor_name,
-        "source": spec.source,
-        "source_series": source_series,
-        "frequency": spec.frequency,
-        "ret_type": spec.ret_type,
-        "lag_policy": LAG_POLICY_BY_FACTOR.get(spec.factor_code),
-        "source_tz": source_tz_label(spec.source),
-    }
+def supabase_upsert_factor_metadata(
+    sb: Client,
+    spec: FactorSpec,
+    source: str,
+    source_series: str,
+    frequency: str,
+    ret_type: str,
+    lag_policy: Optional[str],
+    existing: Dict[str, Optional[str]],
+) -> None:
+    row: Dict[str, Optional[str]] = {"factor_code": spec.factor_code}
+    if not _meta_value(existing.get("factor_name")):
+        row["factor_name"] = spec.factor_name
+    if not _meta_value(existing.get("source")):
+        row["source"] = source
+    if not _meta_value(existing.get("source_series")):
+        row["source_series"] = source_series
+    if not _meta_value(existing.get("frequency")):
+        row["frequency"] = frequency
+    if not _meta_value(existing.get("ret_type")):
+        row["ret_type"] = ret_type
+    if not _meta_value(existing.get("lag_policy")) and lag_policy is not None:
+        row["lag_policy"] = lag_policy
+    if not _meta_value(existing.get("source_tz")):
+        row["source_tz"] = source_tz_label(source)
+    if len(row) == 1:
+        return
     sb.table("factor_metadata").upsert(row).execute()
+
+
+def supabase_delete_factor_returns(sb: Client, factor_codes: List[str]) -> None:
+    if not factor_codes:
+        return
+    chunk_size = 100
+    for i in range(0, len(factor_codes), chunk_size):
+        chunk = factor_codes[i : i + chunk_size]
+        sb.table(FACTOR_TABLE).delete().in_("factor_code", chunk).execute()
 
 
 # ----------------------------
@@ -562,11 +626,10 @@ def build_factor_specs(nasdaq_enabled: bool) -> List[FactorSpec]:
         FactorSpec(
             factor_code="F_CURR_USDKRW",
             factor_name="통화(원/달러)",
-            source="YFINANCE",
-            source_series="KRW=X",
+            source="PYKRX",
+            source_series="456880",
             frequency="D",
             ret_type="log_return",
-            yf_candidates=["KRW=X", "USDKRW=X"],
         ),
         FactorSpec(
             factor_code="F_VOL_VIX",
@@ -655,10 +718,31 @@ def source_tz_label(source: str) -> str:
     return "unknown"
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Load factor_returns from configured sources.")
+    parser.add_argument(
+        "--factor-codes",
+        type=str,
+        default="",
+        help="Comma-separated factor codes to load (optional).",
+    )
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="Delete factor_returns for selected factor codes before reloading.",
+    )
+    return parser.parse_args()
+
+
 # ----------------------------
 # Main
 # ----------------------------
 def main():
+    args = parse_args()
+    target_factor_codes = [
+        c.strip() for c in args.factor_codes.split(",") if c.strip()
+    ]
+
     sb_url = env("SUPABASE_URL")
     sb_key = env("SUPABASE_KEY")
     fred_key = env("FRED_API_KEY")
@@ -674,39 +758,66 @@ def main():
     default_start = end - dt.timedelta(days=365 * 5)
 
     specs = build_factor_specs(nasdaq_enabled=nasdaq_enabled)
+    if target_factor_codes:
+        specs = [s for s in specs if s.factor_code in target_factor_codes]
+        if not specs:
+            print("[WARN] no matching factor_codes in specs")
+            return
+    elif args.full_refresh:
+        print("[WARN] --full-refresh requires --factor-codes")
+        return
+
+    factor_codes = [spec.factor_code for spec in specs]
+    meta_map = fetch_factor_metadata_map(sb, factor_codes)
+
+    if args.full_refresh and target_factor_codes:
+        supabase_delete_factor_returns(sb, target_factor_codes)
+        print(f"[INFO] deleted factor_returns for {len(target_factor_codes)} factor(s)")
 
     total_rows = 0
     print(f"[INFO] KST today={today_kst_date()} / fetch_asof(end)={end}")
 
     for spec in specs:
+        meta = meta_map.get(spec.factor_code, {})
+        source = meta.get("source") or spec.source
+        source_series = meta.get("source_series") or spec.source_series
+        frequency = (meta.get("frequency") or spec.frequency).strip().upper()
+        ret_type = meta.get("ret_type") or spec.ret_type
+        lag_policy = meta.get("lag_policy") or LAG_POLICY_BY_FACTOR.get(spec.factor_code)
         last_date = supabase_get_last_date(sb, spec.factor_code)
 
-        # 이미 asof까지 있으면 스킵 (record_date 기준)
-        if last_date is not None and last_date >= end:
+        # 월간은 기존대로 최신이면 스킵, 일간은 최근 N일 백필
+        if last_date is not None and frequency != "D" and last_date >= end:
             print(f"[SKIP] {spec.factor_code}: up-to-date (last_date={last_date} >= asof={end})")
             continue
 
         if last_date:
-            start_store = last_date + dt.timedelta(days=1)
-            start_fetch = apply_lookback(start_store, spec.frequency)
+            if frequency == "D":
+                anchor = min(last_date, end)
+                start_store = anchor - dt.timedelta(days=BACKFILL_DAYS_DAILY - 1)
+                if start_store < default_start:
+                    start_store = default_start
+            else:
+                start_store = last_date + dt.timedelta(days=1)
+            start_fetch = apply_lookback(start_store, frequency)
         else:
             start_store = default_start
-            start_fetch = apply_lookback(default_start, spec.frequency)
+            start_fetch = apply_lookback(default_start, frequency)
 
         if start_store > end:
             print(f"[SKIP] {spec.factor_code}: no new window (store_from={start_store} > asof={end})")
             continue
 
-        print(f"[FETCH] {spec.factor_code} ({spec.source} {spec.source_series}) fetch {start_fetch} -> {end} / store from {start_store}")
+        print(f"[FETCH] {spec.factor_code} ({source} {source_series}) fetch {start_fetch} -> {end} / store from {start_store}")
 
-        used_source_series = spec.source_series
+        used_source_series = source_series
 
         # 1) fetch "level"
         try:
-            if spec.source == "FRED":
-                level = fred_fetch_series(fred_key, spec.source_series, start_fetch, end)
+            if source == "FRED":
+                level = fred_fetch_series(fred_key, source_series, start_fetch, end)
 
-            elif spec.source == "ECOS":
+            elif source == "ECOS":
                 assert spec.ecos_stat_code and spec.ecos_cycle and spec.ecos_item_code
                 level = ecos_fetch_series(
                     ecos_api_key=ecos_key,
@@ -717,21 +828,21 @@ def main():
                     end=end,
                 )
 
-            elif spec.source == "NASDAQ_DATALINK":
+            elif source == "NASDAQ_DATALINK":
                 if not nasdaq_enabled:
                     print(f"[SKIP] {spec.factor_code}: NASDAQ_DATALINK_API_KEY not set")
                     continue
-                level = nasdaq_datalink_fetch_series(nasdaq_key, spec.source_series, start_fetch, end)
+                level = nasdaq_datalink_fetch_series(nasdaq_key, source_series, start_fetch, end)
 
-            elif spec.source == "PYKRX":
-                level = pykrx_fetch_close_series(spec.source_series, start_fetch, end)
+            elif source == "PYKRX":
+                level = pykrx_fetch_close_series(source_series, start_fetch, end)
 
-            elif spec.source == "YFINANCE":
-                cands = spec.yf_candidates or [spec.source_series]
+            elif source == "YFINANCE":
+                cands = spec.yf_candidates or [source_series]
                 used_source_series, level = yfinance_fetch_close_series(cands, start_fetch, end)
 
             else:
-                raise ValueError(f"Unknown source: {spec.source}")
+                raise ValueError(f"Unknown source: {source}")
 
         except Exception as e:
             print(f"[FAIL] {spec.factor_code}: fetch error: {e}")
@@ -744,7 +855,7 @@ def main():
                 print(f"[INFO] {spec.factor_code}: series empty/too short")
                 continue
 
-            ret = compute_returns(level, spec.ret_type, spec.duration_years)
+            ret = compute_returns(level, ret_type, spec.duration_years)
             df = pd.DataFrame({"level": level, "ret": ret})
             df = df.sort_index()
 
@@ -757,7 +868,16 @@ def main():
 
             rows: List[Dict] = []
             try:
-                supabase_upsert_factor_metadata(sb, spec, used_source_series)
+                supabase_upsert_factor_metadata(
+                    sb,
+                    spec,
+                    source=source,
+                    source_series=used_source_series,
+                    frequency=frequency,
+                    ret_type=ret_type,
+                    lag_policy=lag_policy,
+                    existing=meta,
+                )
             except Exception as e:
                 print(f"[WARN] {spec.factor_code}: factor_metadata upsert failed: {e}")
 
